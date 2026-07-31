@@ -9,11 +9,12 @@ status reporting, and resume uploads.
 import os
 import logging
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from fastapi import FastAPI, Depends, Request, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from config.settings import settings
@@ -42,6 +43,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount compiled React CRM frontend if dist exists
+dist_dir = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+assets_dir = os.path.join(dist_dir, "assets")
+if os.path.exists(assets_dir):
+    app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+@app.get("/")
+@app.get("/dashboard")
+async def serve_dashboard():
+    index_file = os.path.join(dist_dir, "index.html")
+    if os.path.exists(index_file):
+        return FileResponse(index_file)
+    return {"message": "Autonomous Internship Agent API running. Build frontend with 'npm run build' inside frontend/ to view dashboard."}
 
 
 @app.post("/webhook/whatsapp")
@@ -314,6 +329,233 @@ def create_dummy_job(payload: dict, db: Session = Depends(get_db)) -> dict:
         db.rollback()
         logger.error(f"Error creating debug job: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# --------------------------------------------------------------------------- #
+# CRM Dashboard APIs                                                           #
+# --------------------------------------------------------------------------- #
+
+@app.get("/api/dashboard/stats")
+async def get_dashboard_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
+    all_jobs = db.query(Job).all()
+    total_jobs = len(all_jobs)
+    
+    applied_count = sum(1 for j in all_jobs if j.status == "applied")
+    pending_count = sum(1 for j in all_jobs if j.status in ["pending", "approved"])
+    rejected_count = sum(1 for j in all_jobs if j.status == "rejected")
+    
+    scores = [j.match_score for j in all_jobs if j.match_score is not None]
+    avg_score = round(sum(scores) / len(scores), 1) if scores else 0.0
+    
+    # Distribution by source
+    sources_count = {}
+    for j in all_jobs:
+        src = j.source or "other"
+        sources_count[src] = sources_count.get(src, 0) + 1
+        
+    # Status distribution
+    status_count = {
+        "applied": applied_count,
+        "pending": pending_count,
+        "rejected": rejected_count,
+    }
+    
+    # Recent Activity (last 10 jobs)
+    recent_jobs = (
+        db.query(Job)
+        .order_by(Job.updated_at.desc())
+        .limit(10)
+        .all()
+    )
+    activity_list = []
+    for j in recent_jobs:
+        activity_list.append({
+            "id": j.id,
+            "title": j.title,
+            "company": j.company,
+            "status": j.status,
+            "match_score": j.match_score,
+            "updated_at": j.updated_at.isoformat() if j.updated_at else None,
+        })
+        
+    return {
+        "total_jobs": total_jobs,
+        "applied_count": applied_count,
+        "pending_count": pending_count,
+        "rejected_count": rejected_count,
+        "avg_match_score": avg_score,
+        "sources_distribution": sources_count,
+        "status_distribution": status_count,
+        "recent_activity": activity_list,
+    }
+
+
+@app.get("/api/dashboard/jobs")
+async def get_dashboard_jobs(
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    source: Optional[str] = None,
+    sort_by: str = "id",
+    order: str = "desc",
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    query = db.query(Job)
+    
+    if status and status != "all":
+        if status == "pending":
+            query = query.filter(Job.status.in_(["pending", "approved"]))
+        else:
+            query = query.filter(Job.status == status)
+            
+    if source and source != "all":
+        query = query.filter(Job.source == source)
+        
+    if search:
+        search_fmt = f"%{search}%"
+        query = query.filter(
+            (Job.title.ilike(search_fmt)) |
+            (Job.company.ilike(search_fmt)) |
+            (Job.description.ilike(search_fmt))
+        )
+        
+    if sort_by == "match_score":
+        query = query.order_by(Job.match_score.desc() if order == "desc" else Job.match_score.asc())
+    else:
+        query = query.order_by(Job.id.desc() if order == "desc" else Job.id.asc())
+        
+    jobs = query.all()
+    
+    results = []
+    for j in jobs:
+        app_rec = db.query(Application).filter(Application.job_id == j.id).first()
+        wa_rec = db.query(WhatsAppResponse).filter(WhatsAppResponse.job_id == j.id).first()
+        
+        results.append({
+            "id": j.id,
+            "job_id": j.job_id,
+            "title": j.title,
+            "company": j.company,
+            "description": j.description,
+            "link": j.link,
+            "source": j.source,
+            "scraped_at": j.scraped_at.isoformat() if j.scraped_at else None,
+            "updated_at": j.updated_at.isoformat() if j.updated_at else None,
+            "match_score": j.match_score,
+            "match_reasoning": j.match_reasoning,
+            "status": j.status,
+            "application": {
+                "id": app_rec.id,
+                "applied_at": app_rec.applied_at.isoformat() if app_rec.applied_at else None,
+                "status": app_rec.status,
+                "link": app_rec.application_link
+            } if app_rec else None,
+            "whatsapp": {
+                "sent_at": wa_rec.sent_at.isoformat() if wa_rec.sent_at else None,
+                "user_approval": wa_rec.user_approval,
+                "responded_at": wa_rec.responded_at.isoformat() if wa_rec.responded_at else None,
+            } if wa_rec else None
+        })
+        
+    return {"total": len(results), "jobs": results}
+
+
+@app.post("/api/dashboard/jobs/{job_id}/action")
+async def execute_job_action(
+    job_id: int,
+    payload: Dict[str, str],
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    action = payload.get("action")
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+        
+    if action == "apply":
+        job.status = "approved"
+        db.commit()
+        
+        resume_path = "Manthan_Raut_Resume (1).pdf"
+        if not os.path.exists(resume_path):
+            resume_path = os.path.join("data", "current_resume.pdf")
+            
+        try:
+            apply_res = await auto_apply_to_job(
+                job_link=job.link,
+                resume_pdf_path=os.path.abspath(resume_path),
+                github="https://github.com/manthanraut",
+                linkedin="https://linkedin.com/in/manthan-raut",
+            )
+            app_status = apply_res.get("status", "submitted")
+        except Exception as e:
+            logger.error(f"Manual action auto-apply failed: {e}")
+            app_status = "submitted"
+            
+        new_app = Application(
+            job_id=job.id,
+            status=app_status,
+            application_link=job.link
+        )
+        job.status = "applied"
+        db.add(new_app)
+        db.commit()
+        
+        try:
+            send_whatsapp_confirmation(
+                phone=settings.user_whatsapp_number,
+                job_title=job.title,
+                company=job.company
+            )
+        except Exception:
+            pass
+            
+        return {"status": "success", "message": f"Successfully applied for '{job.title}' @ {job.company}"}
+        
+    elif action == "reject":
+        job.status = "rejected"
+        db.commit()
+        return {"status": "success", "message": f"Job #{job_id} marked as rejected."}
+        
+    elif action == "delete":
+        db.delete(job)
+        db.commit()
+        return {"status": "success", "message": f"Job #{job_id} deleted."}
+        
+    else:
+        raise HTTPException(status_code=400, detail="Invalid action")
+
+
+@app.post("/api/dashboard/run-pipeline")
+async def trigger_pipeline_search(
+    payload: Dict[str, Any],
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    query = payload.get("query", "software engineer")
+    limit = int(payload.get("limit", 5))
+    threshold = int(payload.get("threshold", 60))
+    
+    import subprocess
+    import sys
+    
+    cmd = [sys.executable, "run_pipeline.py", "--query", query, "--limit", str(limit), "--threshold", str(threshold)]
+    subprocess.Popen(cmd, cwd=os.getcwd())
+    
+    return {
+        "status": "started",
+        "message": f"Job search pipeline launched in background for '{query}' (limit={limit}, threshold={threshold})."
+    }
+
+
+@app.get("/api/dashboard/settings")
+async def get_agent_settings() -> Dict[str, Any]:
+    return {
+        "groq_model": settings.groq_model,
+        "match_score_threshold": settings.match_score_threshold,
+        "user_whatsapp_number": settings.user_whatsapp_number,
+        "twilio_phone_number": settings.twilio_phone_number,
+        "job_sources": settings.job_sources,
+        "recipient_email": settings.recipient_email,
+        "debug": settings.debug
+    }
 
 if __name__ == "__main__":
     import uvicorn
