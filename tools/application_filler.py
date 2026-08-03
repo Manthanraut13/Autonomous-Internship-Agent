@@ -179,7 +179,8 @@ async def auto_apply_to_job(job_link: str, resume_pdf_path: str, github: str, li
     
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            # Visible browser mode (headless=False) so user can watch form filling live
+            browser = await p.chromium.launch(headless=False, slow_mo=500)
             context = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
             )
