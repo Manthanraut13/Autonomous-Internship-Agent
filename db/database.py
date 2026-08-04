@@ -42,43 +42,60 @@ logger = logging.getLogger(__name__)
 # Engine                                                                       #
 # --------------------------------------------------------------------------- #
 
-# Connection pool tuning — safe defaults for a single-process agent
-_POOL_KWARGS: dict = {}
+def _create_engine_with_fallback():
+    """
+    Create a SQLAlchemy engine. Falls back to SQLite if PostgreSQL is
+    unavailable (e.g., during local development without PostgreSQL).
+    """
+    db_url = settings.database_url
+    pool_kwargs: dict = {}
 
-if settings.database_url.startswith("postgresql"):
-    # PostgreSQL: use a small persistent connection pool
-    _POOL_KWARGS = {
-        "pool_size": 5,          # keep 5 connections open
-        "max_overflow": 10,      # allow up to 10 extra on burst
-        "pool_timeout": 30,      # seconds to wait for a connection
-        "pool_recycle": 1800,    # recycle connections every 30 min
-        "pool_pre_ping": True,   # verify connection health before use
-    }
-else:
-    # SQLite (local / test): no connection pool needed
-    _POOL_KWARGS = {
-        "connect_args": {"check_same_thread": False},
-    }
+    if db_url.startswith("postgresql"):
+        pool_kwargs = {
+            "pool_size": 5,
+            "max_overflow": 10,
+            "pool_timeout": 30,
+            "pool_recycle": 1800,
+            "pool_pre_ping": True,
+        }
+        try:
+            test_engine = create_engine(db_url, **pool_kwargs)
+            with test_engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            logger.info("Database engine created → PostgreSQL")
+            return test_engine
+        except Exception as e:
+            logger.warning(
+                f"PostgreSQL connection failed: {e}\n"
+                f"  → Falling back to SQLite at data/agent.db"
+            )
+            import os
+            os.makedirs("data", exist_ok=True)
+            db_url = "sqlite:///data/agent.db"
+            pool_kwargs = {"connect_args": {"check_same_thread": False}}
+    else:
+        pool_kwargs = {"connect_args": {"check_same_thread": False}}
 
-engine = create_engine(
-    settings.database_url,
-    echo=settings.debug,   # log SQL statements only in debug mode
-    future=True,           # use SQLAlchemy 2.x-style queries
-    **_POOL_KWARGS,
-)
+    eng = create_engine(
+        db_url,
+        echo=settings.debug,
+        future=True,
+        **pool_kwargs,
+    )
+    db_type = "SQLite" if "sqlite" in db_url else "Other"
+    logger.info(f"Database engine created → {db_type}")
+    return eng
+
+
+engine = _create_engine_with_fallback()
 
 # Enable WAL mode for SQLite to allow concurrent reads during writes
-if settings.database_url.startswith("sqlite"):
+if "sqlite" in str(engine.url):
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragma(dbapi_conn, _connection_record):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.close()
-
-logger.info(
-    f"Database engine created → "
-    f"{'PostgreSQL' if 'postgresql' in settings.database_url else 'SQLite'}"
-)
 
 # --------------------------------------------------------------------------- #
 # Session factory                                                              #

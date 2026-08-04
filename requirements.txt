@@ -1,21 +1,41 @@
+# Core frameworks
 langgraph
 langchain
-langchain-openai
+langchain-groq
 langchain-community
 langsmith
+
+# LLM providers
 openai
+
+# Messaging
 twilio
 sendgrid
+
+# Database
 psycopg2-binary
 SQLAlchemy
-selenium
+
+# Browser automation
 playwright
+
+# HTTP & scraping
 requests
+httpx
 beautifulsoup4
+
+# Scheduling
 APScheduler
+
+# Web server
 fastapi
-uvicorn
+uvicorn[standard]
+
+# Data validation
 pydantic
-python-dotenv
 pydantic-settings
+python-dotenv
+
+# PDF parsing
 PyPDF2
+PyMuPDF

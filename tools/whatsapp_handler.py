@@ -34,7 +34,14 @@ def _get_twilio_client() -> Client:
     return Client(settings.twilio_account_sid, settings.twilio_auth_token)
 
 
-def send_whatsapp_approval(phone: str, job_title: str, company: str, match_score: float) -> str:
+def send_whatsapp_approval(
+    phone: str,
+    job_title: str,
+    company: str,
+    match_score: float,
+    job_link: str = "",
+    location: str = "",
+) -> str:
     """
     Sends a WhatsApp message asking the user for approval to apply to a job.
 
@@ -43,6 +50,8 @@ def send_whatsapp_approval(phone: str, job_title: str, company: str, match_score
         job_title (str): Title of the internship/job.
         company (str): Name of the company.
         match_score (float): The calculated match score (0-100).
+        job_link (str): URL to the job listing.
+        location (str): Job location.
 
     Returns:
         str: The Twilio Message SID if successful.
@@ -58,9 +67,13 @@ def send_whatsapp_approval(phone: str, job_title: str, company: str, match_score
             f"🎯 *New Match Alert!*\n\n"
             f"💼 *{company}*\n"
             f"📌 {job_title}\n"
-            f"⭐ Match Score: {int(match_score)}/100\n\n"
-            f"Reply with ✅ to apply, or ❌ to skip."
+            f"⭐ Match Score: {int(match_score)}/100\n"
         )
+        if location:
+            message_body += f"📍 {location}\n"
+        if job_link:
+            message_body += f"🔗 {job_link}\n"
+        message_body += f"\nReply *yes* to apply, or *no* to skip."
 
         message = client.messages.create(
             from_=from_number,

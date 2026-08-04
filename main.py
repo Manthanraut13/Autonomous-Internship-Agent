@@ -110,8 +110,6 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)) -> D
                         apply_res = await auto_apply_to_job(
                             job_link=job.link,
                             resume_pdf_path=os.path.abspath(resume_path),
-                            github="https://github.com/manthanraut",
-                            linkedin="https://linkedin.com/in/manthan-raut",
                         )
                         logger.info(f"Auto-apply result for Job #{job.id}: {apply_res}")
 
@@ -184,6 +182,7 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)) -> D
                             job_title=next_job.title,
                             company=next_job.company,
                             match_score=next_job.match_score or 0.0,
+                            job_link=next_job.link,
                         )
                         if next_sid:
                             next_wa = WhatsAppResponse(
@@ -482,8 +481,6 @@ async def execute_job_action(
             apply_res = await auto_apply_to_job(
                 job_link=job.link,
                 resume_pdf_path=os.path.abspath(resume_path),
-                github="https://github.com/manthanraut",
-                linkedin="https://linkedin.com/in/manthan-raut",
             )
             app_status = apply_res.get("status", "submitted")
         except Exception as e:
@@ -554,7 +551,11 @@ async def get_agent_settings() -> Dict[str, Any]:
         "twilio_phone_number": settings.twilio_phone_number,
         "job_sources": settings.job_sources,
         "recipient_email": settings.recipient_email,
-        "debug": settings.debug
+        "debug": settings.debug,
+        "candidate_name": settings.candidate_name,
+        "candidate_email": settings.candidate_email,
+        "candidate_github": settings.candidate_github,
+        "candidate_linkedin": settings.candidate_linkedin,
     }
 
 if __name__ == "__main__":

@@ -230,6 +230,7 @@ def run(search_query: str, limit: int, threshold: int):
                         job_title=first_job.title,
                         company=first_job.company,
                         match_score=first_job.match_score or 0.0,
+                        job_link=first_job.link,
                     )
                     if sid:
                         wa_record = WhatsAppResponse(

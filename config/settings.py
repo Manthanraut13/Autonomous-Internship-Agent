@@ -109,6 +109,21 @@ class Settings(BaseSettings):
     job_sources: Union[List[str], str] = "indeed,linkedin,internship.com"
 
     # ------------------------------------------------------------------ #
+    # Adzuna API (free tier: 250 requests/day, real apply links)          #
+    # ------------------------------------------------------------------ #
+    adzuna_app_id: Optional[str] = None
+    adzuna_api_key: Optional[str] = None
+
+    # ------------------------------------------------------------------ #
+    # Candidate Profile (used by auto-apply form filler)                  #
+    # ------------------------------------------------------------------ #
+    candidate_name: str = "Manthan Raut"
+    candidate_email: str = "manthanr141@gmail.com"
+    candidate_phone: str = "+919529883808"
+    candidate_github: str = "https://github.com/Manthanraut13"
+    candidate_linkedin: str = "https://linkedin.com/in/manthan-raut"
+
+    # ------------------------------------------------------------------ #
     # Debug flag                                                           #
     # ------------------------------------------------------------------ #
     debug: bool = False
