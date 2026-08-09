@@ -1,31 +1,44 @@
 """
 tools/application_filler.py
 ---------------------------
-Automated job application filler using Playwright.
-Uses Playwright's SYNC API in a background thread to avoid
-Windows asyncio subprocess limitations inside uvicorn.
+Automated job application filler using Playwright + Groq Vision AI.
 
-Key features:
-  - Opens a VISIBLE Chromium browser so user can watch live
-  - Specialized handlers for Greenhouse (job-boards.greenhouse.io), Lever (jobs.lever.co), Arbeitnow, Remotive, Himalayas, and generic forms
-  - Clicks through listing pages to reach actual apply forms
-  - Fills forms using candidate profile from settings.py
-  - Fills standard and custom questions (LinkedIn, GitHub, Salary, Availability, Dropdowns, Uploads)
-  - Stealth flags enabled to pass security checks
+Architecture:
+  1. PRIMARY PATH — Vision-Guided Loop (qwen/qwen3.6-27b)
+       Screenshot → Groq Vision analyzes page → decides next Playwright action
+       → executes → screenshot again → repeat until submitted or max steps reached.
+
+  2. FALLBACK PATH — CSS Selector Form Filling
+       If vision loop completes with no form filling (< 3 fills),
+       falls back to the classic CSS-selector-based field scanner.
+
+Key Features:
+  - 🧠 Groq Vision AI (qwen/qwen3.6-27b) guides every Playwright step
+  - 🔄 Stuck Detection: same page 3 times → force scroll or try alternative action
+  - 🏛️ Login Wall Detection: stops immediately if sign-in is required
+  - 📸 Step-by-step screenshots saved in data/apply_steps/
+  - 🎯 CSS Selector Fallback: handles simple forms without burning API tokens
+  - 💾 Persistent Chrome Profile: preserves logged-in sessions (data/chrome_session)
+  - 🔀 LinkedIn External Apply Bypass: navigates to ATS (Greenhouse, Lever)
+  - 📄 Dynamic Resume Extraction: fills fields directly from resume PDF
 """
 
 import logging
 import asyncio
 import os
+import re
+import time
+import hashlib
 import concurrent.futures
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 
 try:
-    from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeoutError
+    from playwright.sync_api import sync_playwright, Page, Frame, TimeoutError as PlaywrightTimeoutError
     PLAYWRIGHT_AVAILABLE = True
 except ImportError:
     sync_playwright = None
     Page = None
+    Frame = None
     PlaywrightTimeoutError = Exception
     PLAYWRIGHT_AVAILABLE = False
 
@@ -34,31 +47,590 @@ logger = logging.getLogger(__name__)
 # Thread pool for running sync Playwright in background threads
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Candidate Profile
+# ──────────────────────────────────────────────────────────────────────────────
 
-def _get_candidate_info() -> dict:
-    """Load candidate profile from settings."""
+def _get_candidate_profile(resume_pdf_path: str) -> dict:
+    """Extract candidate profile dynamically from resume PDF or settings fallback."""
     try:
-        from config.settings import settings
-        return {
-            "name": settings.candidate_name,
-            "email": settings.candidate_email,
-            "phone": settings.candidate_phone,
-            "github": settings.candidate_github,
-            "linkedin": settings.candidate_linkedin,
-        }
-    except Exception:
+        from tools.resume_parser import get_candidate_profile_from_resume
+        return get_candidate_profile_from_resume(resume_pdf_path)
+    except Exception as e:
+        logger.warning(f"Resume profile parsing fallback: {e}")
         return {
             "name": "Manthan Raut",
+            "first_name": "Manthan",
+            "last_name": "Raut",
             "email": "manthanr141@gmail.com",
             "phone": "+919529883808",
             "github": "https://github.com/Manthanraut13",
             "linkedin": "https://linkedin.com/in/manthan-raut",
+            "location": "India",
+            "summary": "Software Engineer & AI Application Developer specializing in Python, FastAPI, React, and LLMs.",
+            "skills": ["Python", "FastAPI", "React", "SQL", "Docker", "Git", "AI/LLM"],
+            "resume_pdf": os.path.abspath(resume_pdf_path) if resume_pdf_path and os.path.exists(resume_pdf_path) else "",
         }
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Screenshot Utilities
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _take_screenshot(page: Page, step: int, label: str = "") -> str:
+    """Take a numbered step screenshot, return the file path."""
+    os.makedirs("data/apply_steps", exist_ok=True)
+    safe_label = re.sub(r"[^\w]", "_", label)[:30]
+    path = f"data/apply_steps/step_{step:03d}_{safe_label}.png"
+    try:
+        page.screenshot(path=path, full_page=False)
+    except Exception as e:
+        logger.debug(f"Screenshot failed at step {step}: {e}")
+    return path
+
+
+def _screenshot_hash(path: str) -> str:
+    """MD5 hash of screenshot file to detect identical (stuck) pages."""
+    try:
+        with open(path, "rb") as f:
+            return hashlib.md5(f.read()).hexdigest()
+    except Exception:
+        return ""
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Vision-Guided Playwright Executor
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _execute_vision_action(
+    page: Page,
+    next_action: dict,
+    candidate: dict,
+    resume_pdf_path: str,
+) -> bool:
+    """
+    Execute a single action returned by the Groq Vision AI.
+    Returns True if the action was executed successfully.
+    """
+    action_type = next_action.get("type", "scroll")
+    target = next_action.get("target", "")
+    value = next_action.get("value", "")
+    selector_hints = next_action.get("selector_hints", [])
+
+    try:
+        # ── CLICK ─────────────────────────────────────────────────────────────
+        if action_type == "click":
+            # Try selector hints first
+            for hint in selector_hints:
+                try:
+                    el = page.locator(f"button:has-text('{hint}'), a:has-text('{hint}'), [aria-label='{hint}']").first
+                    if el.is_visible(timeout=1500):
+                        el.scroll_into_view_if_needed()
+                        el.click()
+                        page.wait_for_timeout(1500)
+                        logger.info(f"  ✅ Clicked hint: '{hint}'")
+                        return True
+                except Exception:
+                    pass
+
+            # Try target text
+            if target:
+                for loc_str in [
+                    f"button:has-text('{target}')",
+                    f"a:has-text('{target}')",
+                    f"[aria-label='{target}']",
+                    f"input[value='{target}']",
+                    f"text={target}",
+                ]:
+                    try:
+                        el = page.locator(loc_str).first
+                        if el.is_visible(timeout=1500):
+                            el.scroll_into_view_if_needed()
+                            el.click()
+                            page.wait_for_timeout(1500)
+                            logger.info(f"  ✅ Clicked target: '{target}'")
+                            return True
+                    except Exception:
+                        continue
+
+            logger.warning(f"  ⚠️ Could not find click target: '{target}'")
+            return False
+
+        # ── FILL ──────────────────────────────────────────────────────────────
+        elif action_type == "fill":
+            # If no value from vision, ask text LLM
+            fill_value = value
+            if not fill_value and target:
+                from tools.ai_vision_guide import decide_field_value
+                fill_value = decide_field_value(target, candidate)
+
+            found = False
+            for hint in selector_hints:
+                for sel in [
+                    f"input[placeholder='{hint}']",
+                    f"input[name='{hint}']",
+                    f"input[aria-label='{hint}']",
+                    f"textarea[placeholder='{hint}']",
+                    f"textarea[name='{hint}']",
+                    f"textarea[aria-label='{hint}']",
+                    f"[name='{hint}']",
+                ]:
+                    try:
+                        el = page.locator(sel).first
+                        if el.is_visible(timeout=1000):
+                            el.scroll_into_view_if_needed()
+                            el.clear()
+                            el.fill(fill_value)
+                            page.wait_for_timeout(500)
+                            logger.info(f"  ✅ Filled '{hint}' with '{fill_value}'")
+                            found = True
+                            return True
+                    except Exception:
+                        continue
+
+            if not found and target:
+                # Try label-based lookup
+                try:
+                    el = page.get_by_label(target, exact=False).first
+                    if el.is_visible(timeout=1500):
+                        el.scroll_into_view_if_needed()
+                        el.clear()
+                        el.fill(fill_value)
+                        page.wait_for_timeout(500)
+                        logger.info(f"  ✅ Filled by label '{target}' → '{fill_value}'")
+                        return True
+                except Exception:
+                    pass
+
+            logger.warning(f"  ⚠️ Could not fill field: '{target}'")
+            return False
+
+        # ── SELECT ────────────────────────────────────────────────────────────
+        elif action_type == "select":
+            select_value = value
+            for hint in selector_hints:
+                try:
+                    sel_el = page.locator(f"select[name='{hint}'], select[aria-label='{hint}']").first
+                    if sel_el.is_visible(timeout=1000):
+                        sel_el.select_option(label=select_value)
+                        page.wait_for_timeout(500)
+                        logger.info(f"  ✅ Selected '{select_value}' in '{hint}'")
+                        return True
+                except Exception:
+                    pass
+
+            if target:
+                try:
+                    sel_el = page.get_by_label(target, exact=False).first
+                    sel_el.select_option(label=select_value)
+                    page.wait_for_timeout(500)
+                    logger.info(f"  ✅ Selected '{select_value}' for '{target}'")
+                    return True
+                except Exception:
+                    pass
+
+            return False
+
+        # ── UPLOAD ────────────────────────────────────────────────────────────
+        elif action_type == "upload":
+            upload_path = resume_pdf_path or candidate.get("resume_pdf", "")
+            if not upload_path or not os.path.exists(upload_path):
+                logger.warning("  ⚠️ Resume PDF not found for upload")
+                return False
+
+            for sel in ["input[type='file']", "[class*='upload'] input", "[id*='resume'] input", "[id*='cv'] input"]:
+                try:
+                    el = page.locator(sel).first
+                    if el.count() > 0:
+                        el.set_input_files(upload_path)
+                        page.wait_for_timeout(2000)
+                        logger.info(f"  ✅ Uploaded resume: {upload_path}")
+                        return True
+                except Exception:
+                    continue
+
+            # Try via filechooser event
+            try:
+                with page.expect_file_chooser(timeout=3000) as fc_info:
+                    upload_btn = page.locator("button:has-text('Upload'), button:has-text('Resume'), label[for*='file']").first
+                    upload_btn.click()
+                fc = fc_info.value
+                fc.set_files(upload_path)
+                page.wait_for_timeout(2000)
+                logger.info(f"  ✅ Uploaded resume via file chooser")
+                return True
+            except Exception:
+                pass
+
+            return False
+
+        # ── SCROLL ────────────────────────────────────────────────────────────
+        elif action_type == "scroll":
+            direction = value.lower() if value else "down"
+            amount = 500 if direction == "down" else -500
+            page.evaluate(f"window.scrollBy(0, {amount})")
+            page.wait_for_timeout(800)
+            logger.info(f"  ✅ Scrolled {direction}")
+            return True
+
+        # ── CLOSE MODAL ───────────────────────────────────────────────────────
+        elif action_type == "close_modal":
+            for sel in [
+                "button[aria-label='Dismiss']",
+                "button[aria-label='Close']",
+                "button.modal__dismiss",
+                "[role='dialog'] button:has-text('Close')",
+                "[role='dialog'] button:has-text('Cancel')",
+                "button:has-text('Not now')",
+                "button:has-text('Skip')",
+            ]:
+                try:
+                    btn = page.locator(sel).first
+                    if btn.is_visible(timeout=800):
+                        btn.click()
+                        page.wait_for_timeout(600)
+                        logger.info(f"  ✅ Closed modal with: {sel}")
+                        return True
+                except Exception:
+                    continue
+
+            # ESC key as last resort
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(600)
+            return True
+
+        # ── NAVIGATE ──────────────────────────────────────────────────────────
+        elif action_type == "navigate":
+            url = value or target
+            if url.startswith("http"):
+                page.goto(url, timeout=20000, wait_until="domcontentloaded")
+                page.wait_for_timeout(2000)
+                logger.info(f"  ✅ Navigated to: {url}")
+                return True
+            return False
+
+        # ── SUBMIT ────────────────────────────────────────────────────────────
+        elif action_type == "submit":
+            for sel in [
+                "button[type='submit']",
+                "input[type='submit']",
+                "button:has-text('Submit')",
+                "button:has-text('Apply')",
+                "button:has-text('Send')",
+                "button:has-text('Confirm')",
+            ]:
+                try:
+                    btn = page.locator(sel).first
+                    if btn.is_visible(timeout=1500):
+                        btn.scroll_into_view_if_needed()
+                        btn.click()
+                        page.wait_for_timeout(3000)
+                        logger.info(f"  ✅ Submitted form with: {sel}")
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        # ── WAIT ──────────────────────────────────────────────────────────────
+        elif action_type == "wait":
+            page.wait_for_timeout(2500)
+            return True
+
+        return False
+
+    except Exception as e:
+        logger.warning(f"  ⚠️ Action '{action_type}' raised exception: {e}")
+        return False
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Vision-Guided Application Loop (Primary Path)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _vision_guided_apply(
+    page: Page,
+    candidate: dict,
+    job_url: str,
+    resume_pdf_path: str,
+    max_steps: int = 30,
+) -> Dict[str, Any]:
+    """
+    Main AI Vision loop.
+    Takes screenshot → Groq Vision (qwen/qwen3.6-27b) decides action
+    → Playwright executes → repeat until submitted, login_wall, or max steps.
+
+    Returns: { status, steps_taken, fills_done }
+    """
+    from tools.ai_vision_guide import analyze_screenshot
+
+    step_history: List[dict] = []
+    filled_fields: List[str] = []
+    screenshot_hashes: List[str] = []
+    fills_done = 0
+    consecutive_same = 0
+
+    logger.info(f"🤖 Starting Vision-Guided apply loop (max {max_steps} steps)")
+
+    for step in range(1, max_steps + 1):
+        # ── Screenshot ────────────────────────────────────────────────────────
+        screenshot_path = _take_screenshot(page, step, "vision")
+
+        # Stuck detection via image hash
+        current_hash = _screenshot_hash(screenshot_path)
+        if current_hash and screenshot_hashes and current_hash == screenshot_hashes[-1]:
+            consecutive_same += 1
+        else:
+            consecutive_same = 0
+        screenshot_hashes.append(current_hash)
+
+        if consecutive_same >= 3:
+            logger.warning(f"  🔄 Page stuck for {consecutive_same} steps — forcing scroll")
+            page.evaluate("window.scrollBy(0, 400)")
+            page.wait_for_timeout(800)
+            consecutive_same = 0
+            continue
+
+        # ── Ask Vision AI ─────────────────────────────────────────────────────
+        analysis = analyze_screenshot(
+            screenshot_path=screenshot_path,
+            candidate=candidate,
+            job_url=job_url,
+            step_history=step_history,
+            filled_fields=filled_fields,
+        )
+
+        page_state = analysis.get("page_state", "unknown")
+        next_action = analysis.get("next_action", {})
+        action_type = next_action.get("type", "scroll")
+        target = next_action.get("target", "")
+        description = analysis.get("description", "")
+
+        logger.info(
+            f"  Step {step:02d} | 🌐 {page_state} | "
+            f"👁️ {description[:60]} | "
+            f"▶️  {action_type} → '{target[:40]}'"
+        )
+
+        # ── Terminal States ───────────────────────────────────────────────────
+        if page_state == "submitted" or action_type == "done":
+            logger.info(f"  🎉 Application submitted after {step} steps ({fills_done} fields filled)")
+            return {"status": "submitted", "steps_taken": step, "fills_done": fills_done}
+
+        if page_state == "login_wall":
+            logger.warning(f"  🔐 Login wall detected — stopping vision loop")
+            return {"status": "login_required", "steps_taken": step, "fills_done": fills_done}
+
+        if page_state == "captcha":
+            logger.warning(f"  🤖 CAPTCHA detected — cannot proceed")
+            return {"status": "captcha", "steps_taken": step, "fills_done": fills_done}
+
+        # ── Execute Action ────────────────────────────────────────────────────
+        success = _execute_vision_action(page, next_action, candidate, resume_pdf_path)
+
+        if action_type == "fill" and success:
+            fills_done += 1
+            if target and target not in filled_fields:
+                filled_fields.append(target)
+
+        # Log step history for AI context
+        step_history.append({
+            "step": step,
+            "page_state": page_state,
+            "action": action_type,
+            "target": target,
+            "success": success,
+        })
+
+        page.wait_for_timeout(1200)
+
+    logger.info(f"  ⏱️ Max steps ({max_steps}) reached — {fills_done} fields filled")
+    return {"status": "max_steps", "steps_taken": max_steps, "fills_done": fills_done}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CSS Selector Fallback (Secondary Path)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def ask_ai_for_field_answer(question: str, candidate: dict, options: Optional[List[str]] = None) -> str:
+    """Text-only Groq LLM for custom form question answers (fallback path)."""
+    try:
+        from langchain_groq import ChatGroq
+        from config.settings import settings
+
+        llm = ChatGroq(api_key=settings.groq_api_key, model=settings.groq_model, temperature=0.1)
+        options_str = f"\nAvailable choices: {options}" if options else ""
+        prompt = (
+            f"You are filling a job application for {candidate.get('name', 'Manthan Raut')}.\n"
+            f"Skills: {', '.join(candidate.get('skills', ['Python', 'FastAPI', 'React']))}\n"
+            f"Question: \"{question}\"{options_str}\n\n"
+            f"Return ONLY the final answer. No explanation."
+        )
+        resp = llm.invoke(prompt)
+        answer = resp.content.strip().strip('"').strip("'")
+        logger.info(f"  🧠 AI answered '{question[:40]}': {answer}")
+        return answer
+    except Exception as e:
+        logger.warning(f"AI fallback for '{question}': {e}")
+        q_lower = question.lower()
+        if any(k in q_lower for k in ["sponsorship", "visa"]): return "No"
+        if any(k in q_lower for k in ["authorized", "legally", "eligible"]): return "Yes"
+        if any(k in q_lower for k in ["notice", "start", "available"]): return "Immediately"
+        if any(k in q_lower for k in ["salary", "ctc", "compensation"]): return "Negotiable"
+        if any(k in q_lower for k in ["years", "experience"]): return "2"
+        return "Yes"
+
+
+def _get_field_value(field_name: str, field_placeholder: str, field_label: str, candidate: dict) -> str:
+    """Map a form field to candidate data using name/placeholder/label signals."""
+    signals = " ".join([field_name, field_placeholder, field_label]).lower()
+
+    if any(k in signals for k in ["first", "fname", "firstname"]): return candidate.get("first_name", "Manthan")
+    if any(k in signals for k in ["last", "lname", "lastname", "surname"]): return candidate.get("last_name", "Raut")
+    if any(k in signals for k in ["full", "name"]) and "last" not in signals and "first" not in signals:
+        return candidate.get("name", "Manthan Raut")
+    if any(k in signals for k in ["email", "mail"]): return candidate.get("email", "manthanr141@gmail.com")
+    if any(k in signals for k in ["phone", "mobile", "tel", "number"]): return candidate.get("phone", "+919529883808")
+    if any(k in signals for k in ["github"]): return candidate.get("github", "https://github.com/Manthanraut13")
+    if any(k in signals for k in ["linkedin"]): return candidate.get("linkedin", "https://linkedin.com/in/manthan-raut")
+    if any(k in signals for k in ["city", "location", "address", "country"]): return candidate.get("location", "India")
+    if any(k in signals for k in ["website", "portfolio", "url"]): return candidate.get("github", "https://github.com/Manthanraut13")
+    if any(k in signals for k in ["cover", "message", "why", "motivation"]):
+        return (
+            f"I am excited to apply for this role. As a software engineer specializing in "
+            f"Python, FastAPI, and AI/ML, I have hands-on experience building scalable applications. "
+            f"I am confident I will be a strong addition to the team."
+        )
+    if any(k in signals for k in ["summary", "about", "bio", "objective"]):
+        return candidate.get("summary", "Software Engineer specializing in Python, FastAPI, React, and AI/ML.")
+    return ""
+
+
+def _fill_all_frames(page: Page, resume_pdf_path: str, candidate: dict) -> int:
+    """
+    CSS-selector-based form filler. Scans all iframes recursively.
+    Returns count of fields filled.
+    """
+    frames = [page.main_frame]
+    try:
+        for frame in page.frames:
+            if frame not in frames:
+                frames.append(frame)
+    except Exception:
+        pass
+
+    filled = 0
+    for frame in frames:
+        try:
+            inputs = frame.query_selector_all(
+                "input:not([type='hidden']):not([type='submit']):not([type='button']):not([type='file']),"
+                "textarea, select"
+            )
+            for inp in inputs:
+                try:
+                    if not inp.is_visible():
+                        continue
+                    inp_type = (inp.get_attribute("type") or "text").lower()
+                    name = inp.get_attribute("name") or ""
+                    placeholder = inp.get_attribute("placeholder") or ""
+                    aria_label = inp.get_attribute("aria-label") or ""
+
+                    # Skip if already filled
+                    if inp_type in ("text", "email", "tel", "url", "number"):
+                        current = inp.input_value()
+                        if current and current.strip():
+                            continue
+
+                    # Find field label from DOM
+                    field_id = inp.get_attribute("id") or ""
+                    label_text = ""
+                    if field_id:
+                        try:
+                            label_el = frame.query_selector(f"label[for='{field_id}']")
+                            if label_el:
+                                label_text = label_el.inner_text().strip()
+                        except Exception:
+                            pass
+
+                    value = _get_field_value(name, placeholder, f"{aria_label} {label_text}", candidate)
+
+                    if inp_type == "radio" and not value:
+                        continue
+
+                    tag = inp.evaluate("el => el.tagName").lower()
+
+                    if tag == "select" and label_text:
+                        answer = ask_ai_for_field_answer(label_text, candidate)
+                        try:
+                            inp.select_option(label=answer)
+                            filled += 1
+                        except Exception:
+                            pass
+                        continue
+
+                    if not value:
+                        question = label_text or aria_label or placeholder or name
+                        if question:
+                            value = ask_ai_for_field_answer(question, candidate)
+
+                    if value:
+                        inp.scroll_into_view_if_needed()
+                        inp.fill(value)
+                        filled += 1
+                        logger.info(f"  📝 [CSS Fallback] Filled '{name or placeholder or label_text}' → '{value[:40]}'")
+
+                except Exception:
+                    continue
+
+            # File upload
+            try:
+                if resume_pdf_path and os.path.exists(resume_pdf_path):
+                    file_inputs = frame.query_selector_all("input[type='file']")
+                    for fi in file_inputs:
+                        if fi.is_visible():
+                            fi.set_input_files(resume_pdf_path)
+                            logger.info(f"  📎 [CSS Fallback] Uploaded resume")
+                            filled += 1
+            except Exception:
+                pass
+
+        except Exception:
+            continue
+
+    return filled
+
+
+def _find_and_click_apply_button(page: Page) -> bool:
+    """Find and click the Apply button on a job listing page."""
+    apply_selectors = [
+        "button:has-text('Apply now')",
+        "button:has-text('Apply Now')",
+        "button:has-text('Easy Apply')",
+        "a:has-text('Apply now')",
+        "a:has-text('Apply for this job')",
+        "button:has-text('Apply')",
+        "a[href*='apply']",
+        "[data-control-name='jobdetails_topcard_inapply']",
+    ]
+    for sel in apply_selectors:
+        try:
+            btn = page.locator(sel).first
+            if btn.is_visible(timeout=2000):
+                btn.scroll_into_view_if_needed()
+                btn.click()
+                page.wait_for_timeout(2500)
+                logger.info(f"  ✅ Clicked apply button: {sel}")
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _dismiss_cookie_banners(page: Page) -> None:
-    """Try to dismiss common cookie consent banners."""
+    """Dismiss cookie/consent banners and sign-in modal overlays."""
     selectors = [
+        "button[aria-label='Dismiss']",
+        "button[aria-label='Close']",
+        "button.modal__dismiss",
         "button:has-text('Accept')",
         "button:has-text('Accept All')",
         "button:has-text('Accept Cookies')",
@@ -68,319 +640,37 @@ def _dismiss_cookie_banners(page: Page) -> None:
         "[id*='cookie'] button",
         "[class*='cookie'] button",
         "[id*='consent'] button",
+        # LinkedIn sign-in modal
+        "button.modal__dismiss",
+        "[data-tracking-control-name='guest_homepage-basic_nav-header-signin'] + button",
+        "button[aria-label='Sign in to view more jobs']",
+        "section.sign-in-modal button.modal__dismiss",
     ]
     for sel in selectors:
         try:
             btn = page.locator(sel).first
-            if btn.is_visible(timeout=1000):
+            if btn.is_visible(timeout=600):
                 btn.click()
-                page.wait_for_timeout(500)
-                return
+                page.wait_for_timeout(300)
         except Exception:
             continue
 
 
-def _find_and_click_apply_button(page: Page) -> bool:
-    """
-    On job listing pages (Arbeitnow, WWR, Remotive, etc.), find and click
-    the external "Apply" button to reach the company's actual application portal.
-    """
-    apply_selectors = [
-        "a:has-text('Apply Now')",
-        "a:has-text('Apply for this job')",
-        "a:has-text('Apply')",
-        "button:has-text('Apply Now')",
-        "button:has-text('Apply')",
-        "a.apply-button",
-        "a[class*='apply']",
-        "a[href*='apply']",
-        ".job-apply a",
-        ".apply-btn",
-    ]
-
-    for sel in apply_selectors:
-        try:
-            link = page.locator(sel).first
-            if link.is_visible(timeout=2000):
-                href = link.get_attribute("href") or ""
-                target = link.get_attribute("target") or ""
-
-                if target == "_blank" and href.startswith("http"):
-                    logger.info(f"  → Found external apply link: {href[:80]}...")
-                    page.goto(href, timeout=25000, wait_until="domcontentloaded")
-                    page.wait_for_timeout(2000)
-                    return True
-                elif href and href.startswith("http"):
-                    page.goto(href, timeout=25000, wait_until="domcontentloaded")
-                    page.wait_for_timeout(2000)
-                    return True
-                else:
-                    link.click()
-                    page.wait_for_timeout(3000)
-                    return True
-        except Exception:
-            continue
-
-    return False
-
-
-def _fill_greenhouse_form(page: Page, resume_pdf_path: str, candidate: dict) -> bool:
-    """
-    Specialized form filler for Greenhouse (job-boards.greenhouse.io).
-    Fills First Name, Last Name, Email, Phone, Resume upload, LinkedIn, GitHub,
-    custom text questions, and custom dropdowns.
-    """
-    filled_something = False
-    try:
-        # First Name / Full Name
-        first_name_inp = page.locator("input[id*='first_name'], input[name*='first_name']").first
-        if first_name_inp.count() > 0 and first_name_inp.is_visible():
-            first_name_inp.fill(candidate["name"].split()[0])
-            filled_something = True
-
-        last_name_inp = page.locator("input[id*='last_name'], input[name*='last_name']").first
-        if last_name_inp.count() > 0 and last_name_inp.is_visible():
-            parts = candidate["name"].split()
-            last_name_inp.fill(parts[-1] if len(parts) > 1 else "")
-            filled_something = True
-
-        # Email
-        email_inp = page.locator("input[id*='email'], input[type='email']").first
-        if email_inp.count() > 0 and email_inp.is_visible():
-            email_inp.fill(candidate["email"])
-            filled_something = True
-
-        # Phone
-        phone_inp = page.locator("input[id*='phone'], input[type='tel']").first
-        if phone_inp.count() > 0 and phone_inp.is_visible():
-            phone_inp.fill(candidate["phone"])
-            filled_something = True
-
-        # Resume file upload
-        resume_inp = page.locator("input[type='file']").first
-        if resume_inp.count() > 0 and os.path.exists(resume_pdf_path):
-            resume_inp.set_input_files(resume_pdf_path)
-            filled_something = True
-            logger.info(f"  📎 Uploaded resume to Greenhouse: {os.path.basename(resume_pdf_path)}")
-
-        # Custom Greenhouse text questions (job_application_answers_attributes_X_value)
-        custom_inputs = page.locator("input[id*='job_application_answers_attributes_']").all()
-        for inp in custom_inputs:
-            try:
-                id_val = inp.get_attribute("id") or ""
-                label_text = ""
-                if id_val:
-                    lbl = page.locator(f"label[for='{id_val}']").first
-                    if lbl.count() > 0:
-                        label_text = lbl.inner_text().lower()
-                if not label_text:
-                    parent = inp.locator("xpath=ancestor::div[1]")
-                    label_text = parent.inner_text().lower() if parent.count() > 0 else ""
-
-                if "linkedin" in label_text:
-                    inp.fill(candidate["linkedin"])
-                    filled_something = True
-                    logger.info("  📝 Filled Greenhouse custom LinkedIn profile")
-                elif any(k in label_text for k in ["github", "portfolio", "website", "url"]):
-                    inp.fill(candidate["github"])
-                    filled_something = True
-                    logger.info("  📝 Filled Greenhouse custom GitHub profile")
-                elif any(k in label_text for k in ["salary", "expectation", "compensation"]):
-                    inp.fill("Negotiable")
-                    filled_something = True
-                    logger.info("  📝 Filled Greenhouse salary expectation")
-                elif any(k in label_text for k in ["notice", "period", "available", "start"]):
-                    inp.fill("Immediately")
-                    filled_something = True
-                else:
-                    inp.fill("Yes")
-                    filled_something = True
-            except Exception:
-                continue
-
-        # Custom Greenhouse dropdown questions
-        custom_selects = page.locator("select[id*='job_application_answers_attributes_'], select").all()
-        for sel in custom_selects:
-            try:
-                opts = sel.locator("option").all()
-                selected_val = None
-                for opt in opts:
-                    opt_val = opt.get_attribute("value") or ""
-                    opt_text = opt.inner_text().strip().lower()
-                    if opt_val and opt_val != "" and opt_text not in ["select...", "select an option", "choose..."]:
-                        selected_val = opt_val
-                        if any(w in opt_text for w in ["yes", "y", "true", "agree", "open", "full-time", "remote"]):
-                            break
-                if selected_val:
-                    sel.select_option(value=selected_val)
-                    filled_something = True
-                    logger.info(f"  📝 Selected Greenhouse dropdown option: {selected_val}")
-            except Exception:
-                continue
-
-        # Try to find and click Greenhouse submit button
-        submit_btn = page.locator("button[type='submit'], input[type='submit'], #submit_app, button:has-text('Submit Application')").first
-        if submit_btn.count() > 0 and submit_btn.is_visible():
-            submit_btn.click()
-            page.wait_for_timeout(3000)
-            logger.info("  🖱️ Clicked Greenhouse submit button")
-            return True
-
-        return filled_something
-
-    except Exception as e:
-        logger.error(f"Error in Greenhouse form filler: {e}")
-        return False
-
-
-def _fill_generic_form(page: Page, resume_pdf_path: str, candidate: dict) -> bool:
-    """
-    Generic fallback form filler for all other job portals.
-    """
-    filled_something = False
-    try:
-        inputs = page.locator("input").all()
-        for inp in inputs:
-            try:
-                if not inp.is_visible():
-                    type_attr = (inp.get_attribute("type") or "").lower()
-                    if type_attr != "file":
-                        continue
-
-                type_attr = (inp.get_attribute("type") or "text").lower()
-                placeholder = (inp.get_attribute("placeholder") or "").lower()
-                name_attr = (inp.get_attribute("name") or "").lower()
-                id_attr = (inp.get_attribute("id") or "").lower()
-                aria_label = (inp.get_attribute("aria-label") or "").lower()
-
-                label_text = ""
-                try:
-                    if id_attr:
-                        lbl = page.locator(f"label[for='{id_attr}']").first
-                        if lbl.count() > 0:
-                            label_text = lbl.inner_text().lower()
-                    if not label_text:
-                        parent = inp.locator("xpath=ancestor::div[1]")
-                        if parent.count() > 0:
-                            label_text = parent.inner_text().lower()
-                except Exception:
-                    pass
-
-                hints = f"{placeholder} {name_attr} {id_attr} {aria_label} {label_text}"
-
-                if type_attr == "email" or "email" in hints:
-                    inp.fill(candidate["email"])
-                    filled_something = True
-                elif type_attr in ["tel", "number"] or any(k in hints for k in ["phone", "mobile", "contact"]):
-                    inp.fill(candidate["phone"])
-                    filled_something = True
-                elif type_attr == "file":
-                    if os.path.exists(resume_pdf_path):
-                        inp.set_input_files(resume_pdf_path)
-                        filled_something = True
-                elif "linkedin" in hints:
-                    inp.fill(candidate["linkedin"])
-                    filled_something = True
-                elif any(k in hints for k in ["github", "portfolio", "website", "url"]):
-                    inp.fill(candidate["github"])
-                    filled_something = True
-                elif "first" in hints and "name" in hints:
-                    inp.fill(candidate["name"].split()[0])
-                    filled_something = True
-                elif "last" in hints and "name" in hints:
-                    parts = candidate["name"].split()
-                    inp.fill(parts[-1] if len(parts) > 1 else "")
-                    filled_something = True
-                elif "name" in hints and "user" not in hints and "company" not in hints:
-                    inp.fill(candidate["name"])
-                    filled_something = True
-                elif any(k in hints for k in ["salary", "expectation", "compensation"]):
-                    inp.fill("Negotiable")
-                    filled_something = True
-                elif any(k in hints for k in ["notice", "period", "available", "start"]):
-                    inp.fill("Immediately")
-                    filled_something = True
-                elif type_attr in ["checkbox", "radio"]:
-                    if any(k in hints for k in ["agree", "terms", "privacy", "consent", "gdpr", "yes"]):
-                        if not inp.is_checked():
-                            inp.check()
-                            filled_something = True
-            except Exception:
-                continue
-
-        selects = page.locator("select").all()
-        for sel in selects:
-            try:
-                options = sel.locator("option").all()
-                if len(options) > 1:
-                    selected_val = None
-                    for opt in options:
-                        opt_text = opt.inner_text().strip().lower()
-                        opt_val = opt.get_attribute("value") or ""
-                        if opt_val and opt_val != "" and opt_text not in ["select...", "select an option", "choose...", "select"]:
-                            selected_val = opt_val
-                            if any(w in opt_text for w in ["yes", "y", "true", "agree", "open", "full-time", "remote"]):
-                                break
-
-                    if selected_val:
-                        sel.select_option(value=selected_val)
-                        filled_something = True
-            except Exception:
-                continue
-
-        textareas = page.locator("textarea:visible").all()
-        for ta in textareas:
-            try:
-                cover_text = (
-                    f"Dear Hiring Manager,\n\n"
-                    f"I am very interested in this position and believe my experience in Python, "
-                    f"FastAPI, React, and AI/ML make me a strong candidate.\n\n"
-                    f"GitHub: {candidate['github']}\n"
-                    f"LinkedIn: {candidate['linkedin']}\n\n"
-                    f"Best regards,\n{candidate['name']}"
-                )
-                ta.fill(cover_text)
-                filled_something = True
-            except Exception:
-                continue
-
-        submit_selectors = [
-            "button[type='submit']",
-            "input[type='submit']",
-            "button:has-text('Submit Application')",
-            "button:has-text('Submit')",
-            "button:has-text('Apply')",
-            "button:has-text('Send Application')",
-            "button:has-text('Send')",
-            "#submit_app",
-            "#create_application",
-        ]
-        for sel in submit_selectors:
-            try:
-                btn = page.locator(sel).first
-                if btn.is_visible(timeout=2000):
-                    btn.click()
-                    page.wait_for_timeout(3000)
-                    return True
-            except Exception:
-                continue
-
-        return filled_something
-
-    except Exception as e:
-        logger.error(f"Error filling generic application form: {e}")
-        return False
-
+# ──────────────────────────────────────────────────────────────────────────────
+# Main Playwright Sync Runner
+# ──────────────────────────────────────────────────────────────────────────────
 
 def _run_playwright_sync(job_link: str, resume_pdf_path: str) -> Dict[str, str]:
     """
-    Synchronous Playwright execution — runs in a background thread.
-    Opens a VISIBLE Chromium browser window.
+    Full Playwright execution with Vision AI as primary and CSS fallback.
+    Runs in a background thread (sync Playwright).
     """
-    candidate = _get_candidate_info()
+    candidate = _get_candidate_profile(resume_pdf_path)
 
     platform = "generic"
-    if "greenhouse.io" in job_link.lower():
+    if "linkedin.com" in job_link.lower():
+        platform = "linkedin"
+    elif "greenhouse.io" in job_link.lower():
         platform = "greenhouse"
     elif "lever.co" in job_link.lower():
         platform = "lever"
@@ -389,88 +679,133 @@ def _run_playwright_sync(job_link: str, resume_pdf_path: str) -> Dict[str, str]:
     elif "remotive.com" in job_link.lower():
         platform = "remotive"
 
-    logger.info(f"🌐 Launching visible Chromium browser for {platform} application: {job_link}")
+    logger.info(f"🌐 Launching Chrome ({platform}) for: {job_link}")
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=False,
-                slow_mo=400,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                ]
-            )
-            context = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/122.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1280, "height": 800},
-            )
-            page = context.new_page()
+            user_data_dir = os.path.abspath("data/chrome_session")
+            os.makedirs(user_data_dir, exist_ok=True)
 
-            # Step 1: Navigate to job page (handling Arbeitnow direct apply URLs)
+            # ── Browser Launch (Real Chrome → Chromium fallback) ──────────────
+            try:
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=user_data_dir,
+                    channel="chrome",
+                    headless=False,
+                    slow_mo=250,
+                    args=["--disable-blink-features=AutomationControlled"],
+                    viewport={"width": 1280, "height": 800},
+                )
+                logger.info("  → Using real Google Chrome with persistent session")
+            except Exception as launch_err:
+                logger.warning(f"  → Chrome fallback to Chromium: {launch_err}")
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=user_data_dir,
+                    headless=False,
+                    slow_mo=250,
+                    args=["--disable-blink-features=AutomationControlled"],
+                    viewport={"width": 1280, "height": 800},
+                )
+
+            page = context.pages[0] if context.pages else context.new_page()
+
+            # Arbeitnow uses a direct /apply path
             target_url = job_link
             if "arbeitnow.com" in job_link.lower() and not job_link.endswith("/apply"):
                 target_url = f"{job_link.rstrip('/')}/apply"
 
+            # ── Navigate to Job ───────────────────────────────────────────────
             try:
-                page.goto(target_url, timeout=25000, wait_until="domcontentloaded")
-                page.wait_for_timeout(2000)
+                page.goto(target_url, timeout=30000, wait_until="domcontentloaded")
+                page.wait_for_timeout(2500)
             except PlaywrightTimeoutError:
                 logger.warning(f"Timeout loading {target_url}")
-                browser.close()
+                context.close()
                 return {"status": "failed", "platform": platform, "error": "Page load timeout"}
 
-            # Step 2: Dismiss cookie banners
             _dismiss_cookie_banners(page)
-
-            # Step 3: Pre-apply screenshot
             os.makedirs("data", exist_ok=True)
+
+            # Pre-apply screenshot
             try:
                 page.screenshot(path="data/pre_apply_screenshot.png")
             except Exception:
                 pass
 
-            # Step 4: Click through to actual apply form if on a listing portal
-            clicked_through = _find_and_click_apply_button(page)
-            if clicked_through:
-                logger.info("  → Navigated to job application page")
-                _dismiss_cookie_banners(page)
-                page.wait_for_timeout(2000)
+            # Click "Apply" button if on listing page
+            _find_and_click_apply_button(page)
+            _dismiss_cookie_banners(page)
+            page.wait_for_timeout(1800)
 
-            # Step 5: Detect platform and fill form
-            current_url = page.url.lower()
-            success = False
-            if "greenhouse.io" in current_url:
-                logger.info("  → Detected Greenhouse application form")
-                success = _fill_greenhouse_form(page, resume_pdf_path, candidate)
-            else:
-                success = _fill_generic_form(page, resume_pdf_path, candidate)
+            # ══════════════════════════════════════════════════════════════════
+            # PRIMARY: Vision-Guided AI Loop
+            # ══════════════════════════════════════════════════════════════════
+            vision_result = _vision_guided_apply(
+                page=page,
+                candidate=candidate,
+                job_url=job_link,
+                resume_pdf_path=resume_pdf_path,
+                max_steps=30,
+            )
 
-            # Step 6: Post-apply screenshot
+            vision_status = vision_result.get("status", "unknown")
+            fills_done = vision_result.get("fills_done", 0)
+
+            # ══════════════════════════════════════════════════════════════════
+            # FALLBACK: CSS Selector form filling if vision filled < 2 fields
+            # ══════════════════════════════════════════════════════════════════
+            if vision_status not in ("submitted", "login_required", "captcha") and fills_done < 2:
+                logger.info("  🔄 Vision filled < 2 fields — running CSS fallback filler")
+                fallback_fills = _fill_all_frames(page, resume_pdf_path, candidate)
+                logger.info(f"  📝 CSS fallback filled {fallback_fills} fields")
+
+                # Try to submit the form
+                for submit_sel in [
+                    "button[type='submit']",
+                    "button:has-text('Submit')",
+                    "button:has-text('Apply')",
+                    "button:has-text('Send Application')",
+                ]:
+                    try:
+                        btn = page.locator(submit_sel).first
+                        if btn.is_visible(timeout=1500):
+                            btn.scroll_into_view_if_needed()
+                            btn.click()
+                            page.wait_for_timeout(3000)
+                            logger.info(f"  ✅ CSS fallback submitted with: {submit_sel}")
+                            break
+                    except Exception:
+                        continue
+
+            # Post-apply screenshot
             try:
                 page.screenshot(path="data/post_apply_screenshot.png")
             except Exception:
                 pass
 
-            page.wait_for_timeout(3000)
-            browser.close()
+            page.wait_for_timeout(2000)
+            context.close()
 
-            if success:
-                logger.info(f"✅ Successfully applied via {platform} for {job_link}")
-                return {"status": "applied", "platform": platform}
+            # ── Determine Final Status ────────────────────────────────────────
+            if vision_status == "submitted":
+                logger.info(f"✅ Vision confirmed submission for {job_link}")
+                return {"status": "applied", "platform": platform, "mode": "vision_guided"}
+            elif vision_status == "login_required":
+                logger.warning(f"🔐 Login required for {job_link}")
+                return {"status": "login_required", "platform": platform, "mode": "vision_guided"}
+            elif fills_done > 0 or (vision_status == "max_steps" and fills_done > 0):
+                return {"status": "submitted", "platform": platform, "mode": "vision_guided"}
             else:
-                logger.info(f"⚠️ Opened job page but form filling incomplete for {job_link}")
-                return {"status": "attempted", "platform": platform}
+                return {"status": "attempted", "platform": platform, "mode": "css_fallback"}
 
     except Exception as e:
         logger.error(f"Critical error during auto_apply: {e}")
         return {"status": "failed", "platform": platform, "error": str(e)}
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Public Async Entry Point
+# ──────────────────────────────────────────────────────────────────────────────
 
 async def auto_apply_to_job(
     job_link: str,
@@ -479,11 +814,11 @@ async def auto_apply_to_job(
     linkedin: str = "",
 ) -> Dict[str, str]:
     """
-    Main async entry point. Runs Playwright's sync API in a background thread
-    to avoid Windows asyncio subprocess limitations inside uvicorn.
+    Async entry point — runs Playwright in a background thread.
+    Called by main.py when a user approves a job via WhatsApp or dashboard.
     """
     if not PLAYWRIGHT_AVAILABLE:
-        logger.error("Playwright is not installed. Run `pip install playwright`.")
+        logger.error("Playwright not installed. Run: pip install playwright && playwright install chromium")
         return {"status": "failed", "platform": "unknown", "error": "Playwright missing"}
 
     loop = asyncio.get_event_loop()

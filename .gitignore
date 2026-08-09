@@ -9,13 +9,12 @@ dist/
 build/
 *.egg
 
-# Environment
+# Environment — contains API keys, never commit
 .env
 .env.local
 
-# Database
+# Database — runtime data
 *.db
-data/agent.db
 
 # IDE
 .vscode/
@@ -30,9 +29,10 @@ Thumbs.db
 # Node (frontend)
 node_modules/
 frontend/node_modules/
+frontend/dist/
 
-# Screenshots
-data/*.png
+# data/ — entire folder excluded (DB, resume, chrome session, screenshots)
+data/
 
-# Misc
+# Misc logs
 *.log

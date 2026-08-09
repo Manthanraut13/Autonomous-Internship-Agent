@@ -2,9 +2,11 @@
 tools/jd_matcher.py
 -------------------
 Matches a parsed resume against a job description using a Groq LLM.
-Returns a structured JSON response evaluating the fit.
+Returns a structured JSON response evaluating the fit. Handles 429 rate limits gracefully.
 """
 
+import time
+import logging
 from typing import List, Dict, Any
 
 from pydantic import BaseModel, Field
@@ -14,6 +16,8 @@ from langchain_groq import ChatGroq
 
 from config.settings import settings
 from config.prompts import MATCH_SYSTEM_PROMPT
+
+logger = logging.getLogger(__name__)
 
 
 class MatchResult(BaseModel):
@@ -32,55 +36,47 @@ class MatchResult(BaseModel):
     )
 
 
-def match_resume_to_job(resume_text: str, job_description: str) -> Dict[str, Any]:
+def match_resume_to_job(resume_text: str, job_description: str, max_retries: int = 3) -> Dict[str, Any]:
     """
     Compares a candidate's resume to a job description using a Groq LLM
-    and returns a structured evaluation.
-
-    Args:
-        resume_text (str): The parsed text of the candidate's resume.
-        job_description (str): The full text of the job description.
-
-    Returns:
-        Dict[str, Any]: A dictionary containing:
-            - score (int): 0-100 match score.
-            - reasoning (str): Explanation for the score.
-            - key_matches (List[str]): Matching elements.
-            - gaps (List[str]): Missing elements.
+    and returns a structured evaluation. Retries automatically on 429 rate limits.
     """
-    # 1. Initialize the Groq LLM
     llm = ChatGroq(
         api_key=settings.groq_api_key,
         model=settings.groq_model,
-        temperature=0.0  # Keep it deterministic for scoring
+        temperature=0.0
     )
 
-    # 2. Setup the JSON output parser with our Pydantic model
     parser = JsonOutputParser(pydantic_object=MatchResult)
 
-    # 3. Create the prompt template
-    # We use the MATCH_SYSTEM_PROMPT from config.prompts and inject the formatting instructions
     prompt = ChatPromptTemplate.from_messages([
         ("system", MATCH_SYSTEM_PROMPT + "\n\n{format_instructions}"),
         ("human", "Resume:\n{resume_text}\n\nJob Description:\n{job_description}")
     ])
 
-    # 4. Construct the LCEL chain
     chain = prompt | llm | parser
 
-    # 5. Invoke the chain
-    try:
-        result = chain.invoke({
-            "resume_text": resume_text,
-            "job_description": job_description,
-            "format_instructions": parser.get_format_instructions()
-        })
-        return result
-    except Exception as e:
-        # In case of parsing or API errors, return a safe fallback dictionary
-        return {
-            "score": 0,
-            "reasoning": f"Error during matching: {str(e)}",
-            "key_matches": [],
-            "gaps": []
-        }
+    for attempt in range(1, max_retries + 1):
+        try:
+            result = chain.invoke({
+                "resume_text": resume_text[:1500],
+                "job_description": job_description[:1500],
+                "format_instructions": parser.get_format_instructions()
+            })
+            return result
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "Rate limit" in err_str:
+                wait_secs = 5 * attempt
+                logger.warning(f"Groq 429 Rate limit hit (attempt {attempt}/{max_retries}), retrying in {wait_secs}s…")
+                time.sleep(wait_secs)
+            else:
+                logger.error(f"Error during LLM matching: {e}")
+                break
+
+    return {
+        "score": 0,
+        "reasoning": "Error or rate limit during matching.",
+        "key_matches": [],
+        "gaps": []
+    }

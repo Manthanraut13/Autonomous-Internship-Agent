@@ -157,8 +157,8 @@ def run(search_query: str, limit: int, threshold: int):
         if score >= threshold:
             scored_jobs.append(job)
 
-        # Small delay to respect Groq free-tier rate limits
-        time.sleep(1)
+        # Delay to respect Groq free-tier rate limits (RPM/TPM)
+        time.sleep(3)
 
     # ── 4. Summary of matches ─────────────────────────────────────────────
     print(f"\n{'─' * 60}")

@@ -1,21 +1,13 @@
 """
 tools/resume_parser.py
 ----------------------
-Parses a resume (PDF or TXT) and extracts key sections using simple
-heuristic string matching.
-
-Returns a structured dictionary:
-{
-    "skills": [...],
-    "experience": [...],
-    "education": [...],
-    "projects": [...]
-}
+Parses a resume (PDF or TXT) and extracts raw text, candidate contact profile,
+and section chunks (skills, experience, education, projects).
 """
 
 import os
 import re
-from typing import Dict, List
+from typing import Dict, List, Any
 
 try:
     import fitz  # PyMuPDF
@@ -38,7 +30,7 @@ def extract_text_from_pdf(file_path: str) -> str:
                 text += page.get_text() + "\n"
             if text.strip():
                 return text
-        except Exception as e:
+        except Exception:
             pass
 
     if PyPDF2 is not None:
@@ -51,7 +43,7 @@ def extract_text_from_pdf(file_path: str) -> str:
                         text += page_text + "\n"
             if text.strip():
                 return text
-        except Exception as e:
+        except Exception:
             pass
 
     if not text.strip():
@@ -66,37 +58,88 @@ def extract_text_from_txt(file_path: str) -> str:
         return file.read()
 
 
-def parse_resume(file_path: str) -> Dict[str, List[str]]:
+def get_candidate_profile_from_resume(file_path: str) -> Dict[str, Any]:
+    """
+    Parses candidate profile dynamically from resume PDF or TXT.
+    Falls back to settings if regex extraction misses a field.
+    """
+    profile = {
+        "name": "Manthan Raut",
+        "first_name": "Manthan",
+        "last_name": "Raut",
+        "email": "manthanr141@gmail.com",
+        "phone": "+919529883808",
+        "github": "https://github.com/Manthanraut13",
+        "linkedin": "https://linkedin.com/in/manthan-raut",
+        "location": "India",
+        "summary": "Software Engineer & AI Application Developer specializing in Python, FastAPI, React, and LLMs.",
+        "skills": ["Python", "FastAPI", "React", "SQL", "PostgreSQL", "Docker", "Git", "AI/LLM"],
+        "resume_pdf": os.path.abspath(file_path) if file_path and os.path.exists(file_path) else "",
+    }
+
+    try:
+        from config.settings import settings
+        profile["name"] = settings.candidate_name or profile["name"]
+        profile["email"] = settings.candidate_email or profile["email"]
+        profile["phone"] = settings.candidate_phone or profile["phone"]
+        profile["github"] = settings.candidate_github or profile["github"]
+        profile["linkedin"] = settings.candidate_linkedin or profile["linkedin"]
+
+        parts = profile["name"].split()
+        profile["first_name"] = parts[0]
+        profile["last_name"] = parts[-1] if len(parts) > 1 else ""
+    except Exception:
+        pass
+
+    if file_path and os.path.exists(file_path):
+        try:
+            ext = file_path.lower().split(".")[-1]
+            raw_text = extract_text_from_pdf(file_path) if ext == "pdf" else extract_text_from_txt(file_path)
+
+            # Email extraction
+            emails = re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", raw_text)
+            if emails:
+                profile["email"] = emails[0]
+
+            # Phone extraction
+            phones = re.findall(r"\+?\d[\d\s\-()]{8,}\d", raw_text)
+            if phones:
+                profile["phone"] = phones[0].strip()
+
+            # Name from top line
+            lines = [l.strip() for l in raw_text.split("\n") if l.strip()]
+            if lines and len(lines[0].split()) <= 4:
+                top_line = lines[0]
+                if not any(k in top_line.lower() for k in ["resume", "curriculum", "email", "phone"]):
+                    profile["name"] = top_line
+                    p_parts = top_line.split()
+                    profile["first_name"] = p_parts[0]
+                    profile["last_name"] = p_parts[-1] if len(p_parts) > 1 else ""
+
+            profile["summary"] = raw_text[:500]
+        except Exception:
+            pass
+
+    return profile
+
+
+def parse_resume(file_path: str) -> Dict[str, Any]:
     """
     Reads a resume (PDF or TXT), extracts its text, and heuristically
     chunks it into skills, experience, education, and projects.
-    
-    Args:
-        file_path (str): The absolute or relative path to the resume file.
-        
-    Returns:
-        Dict[str, List[str]]: Structured data containing sections.
     """
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Resume file not found at: {file_path}")
 
     ext = file_path.lower().split('.')[-1]
-    
-    if ext == "pdf":
-        raw_text = extract_text_from_pdf(file_path)
-    elif ext == "txt":
-        raw_text = extract_text_from_txt(file_path)
-    else:
-        raise ValueError(f"Unsupported file format: .{ext}. Please provide a .pdf or .txt file.")
-
-    return segment_resume_text(raw_text)
+    raw_text = extract_text_from_pdf(file_path) if ext == "pdf" else extract_text_from_txt(file_path)
+    segmented = segment_resume_text(raw_text)
+    segmented["raw_text"] = raw_text
+    return segmented
 
 
 def segment_resume_text(raw_text: str) -> Dict[str, List[str]]:
-    """
-    Chunks raw text into predefined sections using regex headers.
-    """
-    # Structure we want to return
+    """Chunks raw text into predefined sections using regex headers."""
     structured_data: Dict[str, List[str]] = {
         "skills": [],
         "experience": [],
@@ -104,7 +147,6 @@ def segment_resume_text(raw_text: str) -> Dict[str, List[str]]:
         "projects": []
     }
 
-    # Common section header synonyms
     headers_regex = {
         "skills": r"^(?:skills|technical skills|core competencies)\b",
         "experience": r"^(?:experience|work experience|employment history|professional experience)\b",
@@ -114,30 +156,27 @@ def segment_resume_text(raw_text: str) -> Dict[str, List[str]]:
 
     current_section = None
     lines = raw_text.split('\n')
-    
+
     for line in lines:
         cleaned_line = line.strip()
         if not cleaned_line:
             continue
 
-        # Check if the line matches any known header
         lower_line = cleaned_line.lower()
         matched_header = None
-        
+
         for section_key, regex_pattern in headers_regex.items():
             if re.search(regex_pattern, lower_line):
                 matched_header = section_key
                 break
-        
+
         if matched_header:
             current_section = matched_header
             continue
-            
-        # If we are under a recognised section, append the line
+
         if current_section:
             structured_data[current_section].append(cleaned_line)
 
-    # Some basic cleanup (remove empty strings if any crept in)
     for key in structured_data:
         structured_data[key] = [item for item in structured_data[key] if item.strip()]
 

@@ -98,60 +98,40 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)) -> D
                 if is_approved:
                     job.status = "approved"
                     db.commit()
-                    logger.info(f"Job #{job.id} ('{job.title}') APPROVED by user. Triggering auto-apply…")
+                    logger.info(f"Job #{job.id} ('{job.title}') APPROVED — launching Vision AI auto-apply…")
 
-                    # Locate resume PDF
                     resume_path = "Manthan_Raut_Resume (1).pdf"
                     if not os.path.exists(resume_path):
                         resume_path = os.path.join("data", "current_resume.pdf")
 
-                    # Execute real browser application submission via Playwright
                     try:
                         apply_res = await auto_apply_to_job(
                             job_link=job.link,
                             resume_pdf_path=os.path.abspath(resume_path),
                         )
-                        logger.info(f"Auto-apply result for Job #{job.id}: {apply_res}")
-
-                        new_app = Application(
-                            job_id=job.id,
-                            status=apply_res.get("status", "submitted"),
-                            application_link=job.link,
-                        )
-                        job.status = "applied"
-                        db.add(new_app)
-                        db.commit()
-
-                        # Send "Successfully Applied" confirmation message to WhatsApp
-                        try:
-                            send_whatsapp_confirmation(
-                                phone=settings.user_whatsapp_number,
-                                job_title=job.title,
-                                company=job.company,
-                            )
-                        except Exception as c_err:
-                            logger.error(f"Error sending WhatsApp confirmation: {c_err}")
-
+                        logger.info(f"Vision AI apply result for Job #{job.id}: {apply_res}")
+                        app_status = apply_res.get("status", "submitted")
                     except Exception as err:
-                        logger.error(f"Auto-apply error for Job #{job.id}: {err}")
-                        new_app = Application(
-                            job_id=job.id,
-                            status="submitted",
-                            application_link=job.link,
-                        )
-                        job.status = "applied"
-                        db.add(new_app)
-                        db.commit()
+                        logger.error(f"Vision apply error for Job #{job.id}: {err}")
+                        app_status = "submitted"
 
-                        # Send confirmation message
-                        try:
-                            send_whatsapp_confirmation(
-                                phone=settings.user_whatsapp_number,
-                                job_title=job.title,
-                                company=job.company,
-                            )
-                        except Exception as c_err:
-                            logger.error(f"Error sending WhatsApp confirmation: {c_err}")
+                    new_app = Application(
+                        job_id=job.id,
+                        status=app_status,
+                        application_link=job.link,
+                    )
+                    job.status = "applied"
+                    db.add(new_app)
+                    db.commit()
+
+                    try:
+                        send_whatsapp_confirmation(
+                            phone=settings.user_whatsapp_number,
+                            job_title=job.title,
+                            company=job.company,
+                        )
+                    except Exception as c_err:
+                        logger.error(f"WhatsApp confirmation error: {c_err}")
                 else:
                     job.status = "rejected"
                     db.commit()
@@ -472,21 +452,23 @@ async def execute_job_action(
     if action == "apply":
         job.status = "approved"
         db.commit()
-        
+
         resume_path = "Manthan_Raut_Resume (1).pdf"
         if not os.path.exists(resume_path):
             resume_path = os.path.join("data", "current_resume.pdf")
-            
+
         try:
             apply_res = await auto_apply_to_job(
                 job_link=job.link,
                 resume_pdf_path=os.path.abspath(resume_path),
             )
             app_status = apply_res.get("status", "submitted")
+            mode = apply_res.get("mode", "")
         except Exception as e:
-            logger.error(f"Manual action auto-apply failed: {e}")
+            logger.error(f"Dashboard Vision apply failed: {e}")
             app_status = "submitted"
-            
+            mode = "error"
+
         new_app = Application(
             job_id=job.id,
             status=app_status,
@@ -495,7 +477,7 @@ async def execute_job_action(
         job.status = "applied"
         db.add(new_app)
         db.commit()
-        
+
         try:
             send_whatsapp_confirmation(
                 phone=settings.user_whatsapp_number,
@@ -504,8 +486,8 @@ async def execute_job_action(
             )
         except Exception:
             pass
-            
-        return {"status": "success", "message": f"Successfully applied for '{job.title}' @ {job.company}"}
+
+        return {"status": "success", "message": f"Applied for '{job.title}' @ {job.company}", "mode": mode}
         
     elif action == "reject":
         job.status = "rejected"

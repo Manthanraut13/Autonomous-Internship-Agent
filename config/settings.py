@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     # Groq                                                                 #
     # ------------------------------------------------------------------ #
     groq_api_key: str
-    groq_model: str = "llama-3.1-70b-versatile"
+    groq_model: str = "llama-3.1-8b-instant"
 
     # ------------------------------------------------------------------ #
     # LangSmith / LangChain tracing                                        #
