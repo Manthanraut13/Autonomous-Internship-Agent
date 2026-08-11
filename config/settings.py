@@ -83,13 +83,15 @@ class Settings(BaseSettings):
     user_whatsapp_number: str           # Recipient WhatsApp number (E.164)
 
     # ------------------------------------------------------------------ #
-    # Email Delivery (SendGrid or Gmail / SMTP)                           #
+    # Email Delivery (SendGrid or Gmail / SMTP / OAuth2)                  #
     # ------------------------------------------------------------------ #
     sendgrid_api_key: Optional[str] = None
     sender_email: str = "noreply@internshipagent.com"
     recipient_email: str = "manthanr141@gmail.com"
     gmail_user: Optional[str] = None
     gmail_app_password: Optional[str] = None
+    gmail_credentials_file: str = "credentials.json"
+    gmail_token_file: str = "token.json"
     smtp_host: str = "smtp.gmail.com"
     smtp_port: int = 587
 

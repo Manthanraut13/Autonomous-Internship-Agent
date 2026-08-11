@@ -75,13 +75,37 @@ def send_csv_email(csv_path: str, job_count: int) -> bool:
         except Exception as e:
             logger.error(f"SendGrid failed: {e}")
 
-    # 2. Fallback to Gmail SMTP
-    if settings.gmail_app_password and settings.gmail_user:
+    # 2. Fallback to Gmail API (OAuth 2.0)
+    credentials_path = settings.gmail_credentials_file
+    token_path = settings.gmail_token_file
+    
+    if os.path.exists(credentials_path) or os.path.exists(token_path):
         try:
-            logger.info("Attempting to send email via Gmail SMTP...")
+            logger.info("Attempting to send email via Gmail API (OAuth 2.0)...")
+            from google.oauth2.credentials import Credentials
+            from google_auth_oauthlib.flow import InstalledAppFlow
+            from google.auth.transport.requests import Request
+            from googleapiclient.discovery import build
+            
+            SCOPES = ['https://www.googleapis.com/auth/gmail.send']
+            creds = None
+            if os.path.exists(token_path):
+                creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                else:
+                    flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
+                    creds = flow.run_local_server(port=0)
+                with open(token_path, 'w') as token:
+                    token.write(creds.to_json())
+                    
+            service = build('gmail', 'v1', credentials=creds)
+            
             msg = EmailMessage()
             msg['Subject'] = subject
-            msg['From'] = settings.gmail_user
+            # Use "me" for Gmail API unless user specifies sender_email
+            msg['From'] = settings.sender_email if settings.sender_email != "noreply@internshipagent.com" else "me"
             msg['To'] = recipient
             msg.set_content("Please enable HTML viewing to see this message.")
             msg.add_alternative(html_content, subtype='html')
@@ -96,17 +120,16 @@ def send_csv_email(csv_path: str, job_count: int) -> bool:
                 filename=os.path.basename(csv_path)
             )
 
-            with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as server:
-                server.starttls()
-                server.login(settings.gmail_user, settings.gmail_app_password)
-                server.send_message(msg)
-
-            logger.info(f"SMTP email sent successfully to {recipient}")
+            raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+            body = {'raw': raw_message}
+            
+            sent_message = service.users().messages().send(userId='me', body=body).execute()
+            logger.info(f"Gmail API email sent successfully to {recipient}. Message Id: {sent_message.get('id')}")
             return True
-
+            
         except Exception as e:
-            logger.error(f"SMTP fallback failed: {e}")
+            logger.error(f"Gmail API fallback failed: {e}")
             return False
 
-    logger.warning("No email provider configured (SendGrid API key or Gmail SMTP credentials missing).")
+    logger.warning("No email provider configured (SendGrid API key or Gmail OAuth credentials missing).")
     return False

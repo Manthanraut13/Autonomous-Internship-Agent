@@ -36,3 +36,10 @@ data/
 
 # Misc logs
 *.log
+
+# Google OAuth Credentials
+credentials.json
+token.json
+
+# CSV Reports
+*.csv
