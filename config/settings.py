@@ -83,11 +83,15 @@ class Settings(BaseSettings):
     user_whatsapp_number: str           # Recipient WhatsApp number (E.164)
 
     # ------------------------------------------------------------------ #
-    # SendGrid (Email)                                                     #
+    # Email Delivery (SendGrid or Gmail / SMTP)                           #
     # ------------------------------------------------------------------ #
-    sendgrid_api_key: str
-    sender_email: str
-    recipient_email: str
+    sendgrid_api_key: Optional[str] = None
+    sender_email: str = "noreply@internshipagent.com"
+    recipient_email: str = "manthanr141@gmail.com"
+    gmail_user: Optional[str] = None
+    gmail_app_password: Optional[str] = None
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
 
     # ------------------------------------------------------------------ #
     # Database                                                             #
@@ -106,16 +110,18 @@ class Settings(BaseSettings):
     # Declared as str here to prevent pydantic-settings from trying to   #
     # JSON-decode the value; the @field_validator converts it to a list. #
     # ------------------------------------------------------------------ #
-    job_sources: Union[List[str], str] = "indeed,linkedin,internship.com"
+    job_sources: Union[List[str], str] = "indeed,linkedin,internship.com,arbeitnow,remotive,himalayas,apollo,jsearch"
 
     # ------------------------------------------------------------------ #
-    # Adzuna API (free tier: 250 requests/day, real apply links)          #
+    # Additional APIs                                                      #
     # ------------------------------------------------------------------ #
     adzuna_app_id: Optional[str] = None
     adzuna_api_key: Optional[str] = None
+    apollo_api_key: Optional[str] = None
+    jsearch_api_key: Optional[str] = None
 
     # ------------------------------------------------------------------ #
-    # Candidate Profile (used by auto-apply form filler)                  #
+    # Candidate Profile                                                    #
     # ------------------------------------------------------------------ #
     candidate_name: str = "Manthan Raut"
     candidate_email: str = "manthanr141@gmail.com"
@@ -127,6 +133,7 @@ class Settings(BaseSettings):
     # Debug flag                                                           #
     # ------------------------------------------------------------------ #
     debug: bool = False
+
 
     # ================================================================== #
     # Field Validators                                                     #

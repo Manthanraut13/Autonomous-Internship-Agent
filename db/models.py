@@ -86,11 +86,14 @@ class Job(Base):
     # Core job details
     title = Column(String(255), nullable=False)
     company = Column(String(255), nullable=False, index=True)
+    location = Column(String(255), nullable=True)
     description = Column(Text, nullable=True)
     link = Column(String(1000), nullable=False)
+    apply_url = Column(String(1000), nullable=True)
     source = Column(String(50), nullable=False, index=True)  # 'indeed' | 'linkedin' | ...
 
     # Timestamps
+    posted_at = Column(DateTime, nullable=True)
     scraped_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(
         DateTime,

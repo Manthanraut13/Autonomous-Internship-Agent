@@ -39,3 +39,4 @@ python-dotenv
 # PDF parsing
 PyPDF2
 PyMuPDF
+python-dateutil==2.9.0.post0
