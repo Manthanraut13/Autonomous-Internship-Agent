@@ -485,12 +485,14 @@ def get_search_queries_from_resume(file_path: str, max_queries: int = 6) -> List
     Dynamically generates relevant internship/job search queries based on the candidate's
     resume skills, projects, and professional background.
 
+    Focused on AI, GenAI, Agentic AI, and automation roles.
+
     Examples:
-      - 'Software Engineer Intern'
-      - 'Python Developer Intern'
-      - 'Full Stack Developer Intern'
-      - 'AI ML Intern'
-      - 'Backend Developer Intern'
+      - 'AI Consultant Intern'
+      - 'GenAI Developer Intern'
+      - 'Agentic AI Intern'
+      - 'AI Automation Intern'
+      - 'LLM Engineer Intern'
     """
     profile = get_candidate_profile_from_resume(file_path)
     skills = [s.lower() for s in profile.get("skills", [])]
@@ -505,31 +507,35 @@ def get_search_queries_from_resume(file_path: str, max_queries: int = 6) -> List
         if q not in queries:
             queries.append(q)
 
-    # Core high-level titles
-    _add_query("Software Engineer Intern")
+    # ── Primary AI-focused queries (always included) ─────────────────────
+    _add_query("AI Consultant Intern")
+    _add_query("AI Automation Intern")
+    _add_query("GenAI Developer Intern")
 
-    # Skill-based dynamic titles
-    if any(k in all_context for k in ["python", "django", "fastapi", "flask"]):
-        _add_query("Python Developer Intern")
-        _add_query("Backend Developer Intern")
+    # ── Skill-based dynamic AI queries ───────────────────────────────────
+    if any(k in all_context for k in ["langchain", "llm", "openai", "gpt", "prompt", "rag", "agent", "crewai"]):
+        _add_query("Agentic AI Intern")
+        _add_query("LLM Engineer Intern")
 
-    if any(k in all_context for k in ["react", "javascript", "typescript", "frontend", "full stack", "fullstack"]):
-        _add_query("Full Stack Developer Intern")
-
-    if any(k in all_context for k in ["ai", "llm", "machine learning", "ml", "langchain", "deep learning", "nlp"]):
+    if any(k in all_context for k in ["ai", "machine learning", "ml", "deep learning", "nlp", "transformer"]):
         _add_query("AI ML Intern")
-        _add_query("Machine Learning Intern")
 
-    if any(k in all_context for k in ["data", "sql", "analytics", "postgresql"]):
-        _add_query("Data Science Intern")
+    if any(k in all_context for k in ["python", "fastapi", "django", "flask"]):
+        _add_query("AI Python Developer Intern")
 
-    if any(k in all_context for k in ["devops", "docker", "cloud", "aws", "linux"]):
-        _add_query("Cloud DevOps Intern")
+    if any(k in all_context for k in ["react", "javascript", "typescript", "full stack", "fullstack"]):
+        _add_query("Full Stack AI Developer Intern")
 
-    # Always ensure at least 3 relevant queries
-    if len(queries) < 3:
-        _add_query("Software Developer Intern")
-        _add_query("Web Developer Intern")
+    if any(k in all_context for k in ["data", "sql", "analytics", "postgresql", "pandas"]):
+        _add_query("AI Data Analyst Intern")
+
+    if any(k in all_context for k in ["automation", "playwright", "selenium", "n8n", "zapier"]):
+        _add_query("AI Automation Engineer Intern")
+
+    # Always ensure at least 4 AI-focused queries
+    if len(queries) < 4:
+        _add_query("Agentic AI Intern")
+        _add_query("LLM Engineer Intern")
 
     return queries[:max_queries]
 
