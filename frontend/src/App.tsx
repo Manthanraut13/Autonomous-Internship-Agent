@@ -3,7 +3,7 @@ import {
   Briefcase, Search, ExternalLink, Play, Settings, RefreshCw,
   Sparkles, Bot, Building2, X, MapPin, FileText, Mail,
   TrendingUp, Layers, Terminal, Trash2, Clock, CheckCircle,
-  XCircle, Inbox, RotateCcw
+  XCircle, Inbox, RotateCcw, Lock, User, LogOut, ShieldCheck
 } from 'lucide-react';
 import './App.css';
 
@@ -48,6 +48,16 @@ interface PipelineLog {
 /* ───────────────────────── App ───────────────────────────────────── */
 
 export default function App() {
+  // Authentication State
+  const [authToken, setAuthToken] = useState<string | null>(localStorage.getItem('internship_agent_token'));
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [loginUsername, setLoginUsername] = useState('admin');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [loggingIn, setLoggingIn] = useState(false);
+  const [currentUser, setCurrentUser] = useState<string>('admin');
+
+  // Dashboard Tabs & Data
   const [activeTab, setActiveTab] = useState<'jobs' | 'pipeline' | 'settings'>('jobs');
   const [jobs, setJobs] = useState<Job[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
@@ -66,15 +76,91 @@ export default function App() {
   const [pipelineRunning, setPipelineRunning] = useState(false);
   const terminalRef = useRef<HTMLDivElement>(null);
 
+  /* ── Authentication Verification ──────────────────────────────── */
+
+  useEffect(() => {
+    const verifyToken = async () => {
+      const savedToken = localStorage.getItem('internship_agent_token');
+      if (!savedToken) {
+        setIsAuthenticated(false);
+        setLoading(false);
+        return;
+      }
+      try {
+        const res = await fetch('/api/auth/me', {
+          headers: { 'Authorization': `Bearer ${savedToken}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setAuthToken(savedToken);
+          setIsAuthenticated(true);
+          setCurrentUser(data.username || 'admin');
+        } else {
+          localStorage.removeItem('internship_agent_token');
+          setAuthToken(null);
+          setIsAuthenticated(false);
+        }
+      } catch (err) {
+        console.error('Auth verification error:', err);
+        setIsAuthenticated(false);
+      } finally {
+        setLoading(false);
+      }
+    };
+    verifyToken();
+  }, []);
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError(null);
+    setLoggingIn(true);
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: loginUsername, password: loginPassword })
+      });
+      const data = await res.json();
+      if (res.ok && data.token) {
+        localStorage.setItem('internship_agent_token', data.token);
+        setAuthToken(data.token);
+        setIsAuthenticated(true);
+        setCurrentUser(data.username || loginUsername);
+        showToast('Login successful!');
+      } else {
+        setLoginError(data.detail || 'Invalid username or password.');
+      }
+    } catch (err) {
+      setLoginError('Could not connect to backend server.');
+    } finally {
+      setLoggingIn(false);
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('internship_agent_token');
+    setAuthToken(null);
+    setIsAuthenticated(false);
+    showToast('Logged out');
+  };
+
   /* ── Data Fetching ────────────────────────────────────────────── */
 
   const fetchData = async () => {
+    if (!authToken || !isAuthenticated) return;
     try {
+      const authHeader = { 'Authorization': `Bearer ${authToken}` };
       const [statsRes, jobsRes, settingsRes] = await Promise.all([
-        fetch('/api/dashboard/stats'),
-        fetch(`/api/dashboard/jobs?status=${statusFilter}&search=${searchQuery}&source=${sourceFilter}`),
-        fetch('/api/dashboard/settings'),
+        fetch('/api/dashboard/stats', { headers: authHeader }),
+        fetch(`/api/dashboard/jobs?status=${statusFilter}&search=${searchQuery}&source=${sourceFilter}`, { headers: authHeader }),
+        fetch('/api/dashboard/settings', { headers: authHeader }),
       ]);
+
+      if (statsRes.status === 401 || jobsRes.status === 401) {
+        handleLogout();
+        return;
+      }
+
       if (statsRes.ok) setStats(await statsRes.json());
       if (jobsRes.ok) {
         const data = await jobsRes.json();
@@ -88,8 +174,18 @@ export default function App() {
     }
   };
 
-  useEffect(() => { fetchData(); }, [statusFilter, searchQuery, sourceFilter]);
-  useEffect(() => { const iv = setInterval(fetchData, 15000); return () => clearInterval(iv); }, [statusFilter, searchQuery, sourceFilter]);
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchData();
+    }
+  }, [isAuthenticated, statusFilter, searchQuery, sourceFilter]);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      const iv = setInterval(fetchData, 15000);
+      return () => clearInterval(iv);
+    }
+  }, [isAuthenticated, statusFilter, searchQuery, sourceFilter]);
 
   // Auto-scroll terminal
   useEffect(() => {
@@ -101,12 +197,12 @@ export default function App() {
   /* ── Pipeline SSE ─────────────────────────────────────────────── */
 
   const runPipeline = () => {
-    if (pipelineRunning) return;
+    if (pipelineRunning || !authToken) return;
     setPipelineRunning(true);
     setPipelineLogs([]);
     setActiveTab('pipeline');
 
-    const es = new EventSource(`/api/pipeline/stream?target=${pipelineTarget}&threshold=${pipelineThreshold}`);
+    const es = new EventSource(`/api/pipeline/stream?target=${pipelineTarget}&threshold=${pipelineThreshold}&token=${encodeURIComponent(authToken)}`);
 
     es.addEventListener('pipeline', (event: MessageEvent) => {
       try {
@@ -116,7 +212,7 @@ export default function App() {
         if (log.step === 'complete' || log.step === 'error') {
           es.close();
           setPipelineRunning(false);
-          fetchData(); // Refresh dashboard
+          fetchData();
           if (log.step === 'complete') {
             showToast(`✅ Pipeline finished — ${log.data?.matched || 0} jobs matched!`);
           }
@@ -131,7 +227,7 @@ export default function App() {
       setPipelineRunning(false);
       setPipelineLogs(prev => [...prev, {
         step: 'error',
-        message: 'Connection closed or lost. Pipeline may still be running.',
+        message: 'Connection lost or unauthorized. Pipeline finished or session expired.',
         timestamp: new Date().toISOString(),
       }]);
     };
@@ -141,13 +237,23 @@ export default function App() {
 
   const handleJobAction = async (jobId: number, action: 'mark_applied' | 'mark_not_applied' | 'mark_saved' | 'delete', e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
+    if (!authToken) return;
 
     try {
       const res = await fetch(`/api/dashboard/jobs/${jobId}/action`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`
+        },
         body: JSON.stringify({ action }),
       });
+
+      if (res.status === 401) {
+        handleLogout();
+        return;
+      }
+
       if (res.ok) {
         if (selectedJob && selectedJob.id === jobId) {
           if (action === 'delete') {
@@ -207,7 +313,70 @@ export default function App() {
     catch { return ''; }
   };
 
-  /* ── Render ───────────────────────────────────────────────────── */
+  /* ── Render Login Screen If Unauthenticated ───────────────────── */
+
+  if (!isAuthenticated) {
+    return (
+      <div className="login-wrapper">
+        <div className="login-card">
+          <div className="login-header">
+            <div className="login-icon-wrap">
+              <ShieldCheck size={28} />
+            </div>
+            <h2>Internship Agent</h2>
+            <p>Enter your credentials to access the secure dashboard.</p>
+          </div>
+
+          {loginError && (
+            <div className="login-error">
+              <XCircle size={16} />
+              <span>{loginError}</span>
+            </div>
+          )}
+
+          <form className="login-form" onSubmit={handleLogin}>
+            <div className="form-group">
+              <label>Username</label>
+              <div className="login-input-wrap">
+                <User size={16} />
+                <input
+                  type="text"
+                  value={loginUsername}
+                  onChange={(e) => setLoginUsername(e.target.value)}
+                  placeholder="admin"
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label>Password</label>
+              <div className="login-input-wrap">
+                <Lock size={16} />
+                <input
+                  type="password"
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  placeholder="••••••••"
+                  required
+                />
+              </div>
+            </div>
+
+            <button type="submit" className="login-btn" disabled={loggingIn}>
+              {loggingIn ? (
+                <><RefreshCw size={16} className="spinner" /> Authenticating...</>
+              ) : (
+                <>Sign In to Dashboard</>
+              )}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  /* ── Main Authenticated Dashboard ─────────────────────────────── */
 
   return (
     <div className="app-container">
@@ -217,9 +386,18 @@ export default function App() {
           <Bot size={28} />
           <h1>Internship <span>Agent</span></h1>
         </div>
-        <button className="btn btn-primary" onClick={() => { runPipeline(); }} disabled={pipelineRunning}>
-          <Play size={14} /> {pipelineRunning ? 'Running Pipeline...' : 'Run Pipeline'}
-        </button>
+        <div className="header-right">
+          <div className="user-badge">
+            <User size={14} />
+            <span>Logged in as <strong>{currentUser}</strong></span>
+          </div>
+          <button className="btn btn-primary" onClick={() => { runPipeline(); }} disabled={pipelineRunning}>
+            <Play size={14} /> {pipelineRunning ? 'Running Pipeline...' : 'Run Pipeline'}
+          </button>
+          <button className="btn btn-ghost" onClick={handleLogout} title="Log Out">
+            <LogOut size={14} /> Log Out
+          </button>
+        </div>
       </div>
 
       {/* ── Main Tabs ───────────────────────────────────────────── */}
@@ -262,7 +440,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* Section Pills: Inbox / Applied / Not Applied / All */}
+          {/* Section Pills */}
           <div className="status-pills">
             <button
               className={`status-pill ${statusFilter === 'saved' ? 'active' : ''}`}
@@ -372,7 +550,6 @@ export default function App() {
                     </td>
                     <td>
                       <div className="row-actions" onClick={(e) => e.stopPropagation()}>
-                        {/* 1. Apply Link */}
                         {(job.apply_url || job.link) && (
                           <a
                             href={job.apply_url || job.link}
@@ -385,7 +562,6 @@ export default function App() {
                           </a>
                         )}
 
-                        {/* 2. Mark Applied Button */}
                         {job.status !== 'applied' && (
                           <button
                             className="btn-action btn-applied"
@@ -396,7 +572,6 @@ export default function App() {
                           </button>
                         )}
 
-                        {/* 3. Mark Not Applied / Reject Button */}
                         {job.status !== 'rejected' && (
                           <button
                             className="btn-action btn-not-applied"
@@ -407,7 +582,6 @@ export default function App() {
                           </button>
                         )}
 
-                        {/* Restore button if in applied or rejected tab */}
                         {job.status !== 'saved' && (
                           <button
                             className="btn-action btn-restore"
@@ -418,7 +592,6 @@ export default function App() {
                           </button>
                         )}
 
-                        {/* 4. Delete Icon */}
                         <button
                           className="btn-delete-icon"
                           onClick={(e) => handleJobAction(job.id, 'delete', e)}
@@ -461,7 +634,6 @@ export default function App() {
       {activeTab === 'pipeline' && (
         <div className="pipeline-section">
           {/* Config Panel */}
-          {/* Config Panel */}
           <div className="pipeline-config">
             <h3><Settings size={16} /> Pipeline Controls</h3>
             <div className="form-group">
@@ -493,7 +665,7 @@ export default function App() {
             </button>
           </div>
 
-          {/* Real Terminal with FIXED height and internal scrolling */}
+          {/* Real Terminal */}
           <div className="terminal">
             <div className="terminal-header">
               <span className="terminal-dot red" />

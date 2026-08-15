@@ -132,6 +132,13 @@ class Settings(BaseSettings):
     candidate_linkedin: str = "https://linkedin.com/in/manthan-raut"
 
     # ------------------------------------------------------------------ #
+    # Dashboard Authentication                                             #
+    # ------------------------------------------------------------------ #
+    admin_username: str = "admin"
+    admin_password: str = "admin123"
+    auth_secret_key: str = "agent-secure-auth-secret-key-change-in-production"
+
+    # ------------------------------------------------------------------ #
     # Debug flag                                                           #
     # ------------------------------------------------------------------ #
     debug: bool = False
@@ -145,29 +152,15 @@ class Settings(BaseSettings):
     @classmethod
     def validate_database_url(cls, value: str) -> str:
         """
-        Ensure DATABASE_URL targets a supported dialect.
-
-        Accepted prefixes:
-            postgresql://            - production PostgreSQL
-            postgresql+psycopg2://   - explicit psycopg2 driver
-            sqlite://                - lightweight local / test database
-
-        Args:
-            value (str): Raw DATABASE_URL string from the environment.
-
-        Returns:
-            str: The validated (unchanged) database URL.
-
-        Raises:
-            ValueError: When the URL does not start with an accepted prefix.
-
-        Examples:
-            >>> validate_database_url("postgresql://user:pw@localhost/db")
-            'postgresql://user:pw@localhost/db'
-
-            >>> validate_database_url("mysql://user:pw@localhost/db")
-            # raises ValueError
+        Ensure DATABASE_URL targets a supported dialect and normalize postgres:// to postgresql://.
         """
+        if not value:
+            return "sqlite:///data/agent.db"
+
+        # Auto-convert legacy Render / Heroku postgres:// prefix
+        if value.startswith("postgres://"):
+            value = value.replace("postgres://", "postgresql://", 1)
+
         accepted_prefixes = (
             "postgresql://",
             "postgresql+psycopg2://",

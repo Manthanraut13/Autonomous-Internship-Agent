@@ -10,6 +10,7 @@ twilio
 
 # Database
 SQLAlchemy
+psycopg2-binary
 
 # HTTP & scraping
 requests

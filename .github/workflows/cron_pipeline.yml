@@ -38,11 +38,20 @@ jobs:
             echo "$GMAIL_TOKEN" > token.json
           fi
 
+      - name: Wake up Render Web Service (Optional)
+        env:
+          RENDER_APP_URL: ${{ secrets.RENDER_APP_URL }}
+        run: |
+          if [ -n "$RENDER_APP_URL" ]; then
+            echo "Pinging Render to wake up service: $RENDER_APP_URL"
+            curl -s "$RENDER_APP_URL/dashboard" > /dev/null || true
+          fi
+
       - name: Run 25-Target Internship Pipeline
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: "llama-3.1-8b-instant"
-          DATABASE_URL: "sqlite:///data/agent.db"
+          DATABASE_URL: ${{ secrets.DATABASE_URL || 'sqlite:///data/agent.db' }}
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
           TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}

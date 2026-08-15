@@ -2,7 +2,7 @@
 main.py
 -------
 FastAPI application for the Autonomous Internship Agent.
-Serves the React dashboard, provides CRM APIs for browsing scraped jobs,
+Serves the React dashboard, provides secure CRM APIs with JWT-like HMAC auth,
 runs background 9 AM & 9 PM cron schedules, and streams pipeline execution
 in real-time via Server-Sent Events (SSE).
 """
@@ -12,14 +12,18 @@ import sys
 import json
 import time
 import uuid
+import hmac
+import base64
+import hashlib
+import secrets
 import logging
 import asyncio
 from datetime import datetime
 from typing import Dict, Any, Optional, AsyncGenerator, List, Set, Tuple
 
-from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request
+from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
@@ -50,6 +54,83 @@ if sys.stdout.encoding != "utf-8":
 init_db()
 
 # --------------------------------------------------------------------------- #
+# Security & Token Authentication (HMAC-SHA256)                               #
+# --------------------------------------------------------------------------- #
+
+def create_access_token(username: str, expires_in_seconds: int = 86400 * 7) -> str:
+    """Creates a signed HMAC-SHA256 auth token valid for 7 days."""
+    payload = {
+        "sub": username,
+        "exp": int(time.time()) + expires_in_seconds,
+        "iat": int(time.time()),
+        "nonce": secrets.token_hex(8)
+    }
+    payload_json = json.dumps(payload, separators=(',', ':')).encode('utf-8')
+    payload_b64 = base64.urlsafe_b64encode(payload_json).decode('utf-8').rstrip('=')
+    
+    signature = hmac.new(
+        settings.auth_secret_key.encode('utf-8'),
+        payload_b64.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+    
+    return f"{payload_b64}.{signature}"
+
+
+def verify_access_token(token: str) -> Optional[str]:
+    """Verifies signature and expiration of an access token."""
+    if not token or "." not in token:
+        return None
+    try:
+        payload_b64, signature = token.rsplit(".", 1)
+        expected_sig = hmac.new(
+            settings.auth_secret_key.encode('utf-8'),
+            payload_b64.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+        
+        if not secrets.compare_digest(signature, expected_sig):
+            return None
+            
+        # Add padding back if necessary
+        padded_b64 = payload_b64 + '=' * (-len(payload_b64) % 4)
+        payload_bytes = base64.urlsafe_b64decode(padded_b64)
+        payload = json.loads(payload_bytes.decode('utf-8'))
+        
+        if payload.get("exp", 0) < time.time():
+            return None
+            
+        return payload.get("sub")
+    except Exception as e:
+        logger.warning(f"Token verification failed: {e}")
+        return None
+
+
+async def require_admin(
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None)
+) -> str:
+    """
+    Dependency requiring a valid authorization token.
+    Accepts Bearer token in Authorization header or ?token= query param (for SSE).
+    """
+    raw_token = None
+    if authorization and authorization.startswith("Bearer "):
+        raw_token = authorization[7:].strip()
+    elif token:
+        raw_token = token.strip()
+
+    if not raw_token:
+        raise HTTPException(status_code=401, detail="Authentication required. Please log in.")
+
+    user = verify_access_token(raw_token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired session. Please log in again.")
+
+    return user
+
+
+# --------------------------------------------------------------------------- #
 # Background Cron Scheduler (9:00 AM & 9:00 PM)                                #
 # --------------------------------------------------------------------------- #
 scheduler = AsyncIOScheduler()
@@ -59,7 +140,6 @@ async def scheduled_pipeline_execution():
     logger.info("⏰ [APScheduler] Triggering automatic 9 AM/9 PM pipeline run...")
     try:
         from run_pipeline import run as execute_pipeline
-        # Run synchronous pipeline in a background worker thread
         res = await asyncio.to_thread(execute_pipeline, target_matches=25, threshold=settings.match_score_threshold)
         logger.info(f"✅ [APScheduler] Scheduled pipeline run completed: {res}")
     except Exception as exc:
@@ -68,8 +148,8 @@ async def scheduled_pipeline_execution():
 
 app = FastAPI(
     title="Autonomous Internship Agent API",
-    description="Dashboard API, Cron Scheduler, and live pipeline streaming for AI internship matching.",
-    version="2.2.0"
+    description="Secure Dashboard API, Cron Scheduler, and live pipeline streaming for AI internship matching.",
+    version="2.3.0"
 )
 
 @app.on_event("startup")
@@ -128,8 +208,46 @@ async def serve_dashboard():
     return {"message": "Autonomous Internship Agent API running. Build frontend with 'npm run build' inside frontend/ to view dashboard."}
 
 
+# --------------------------------------------------------------------------- #
+# Authentication Endpoints                                                     #
+# --------------------------------------------------------------------------- #
+
+@app.post("/api/auth/login")
+async def login(credentials: Dict[str, str]):
+    username = credentials.get("username", "").strip()
+    password = credentials.get("password", "").strip()
+
+    valid_user = secrets.compare_digest(username, settings.admin_username)
+    valid_pass = secrets.compare_digest(password, settings.admin_password)
+
+    if not (valid_user and valid_pass):
+        logger.warning(f"Failed login attempt for user: '{username}'")
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
+
+    token = create_access_token(username)
+    logger.info(f"Successful login for user: '{username}'")
+    return {
+        "status": "success",
+        "token": token,
+        "username": username,
+        "message": "Authentication successful"
+    }
+
+
+@app.get("/api/auth/me")
+async def get_current_user_profile(user: str = Depends(require_admin)):
+    return {
+        "status": "success",
+        "authenticated": True,
+        "username": user
+    }
+
+
 @app.post("/upload-resume")
-async def upload_resume(file: UploadFile = File(...)) -> Dict[str, str]:
+async def upload_resume(
+    file: UploadFile = File(...),
+    admin: str = Depends(require_admin)
+) -> Dict[str, str]:
     if not file.filename.lower().endswith(('.pdf', '.txt')):
         raise HTTPException(status_code=400, detail="Only PDF and TXT files are allowed.")
     upload_dir = "data"
@@ -146,18 +264,20 @@ async def upload_resume(file: UploadFile = File(...)) -> Dict[str, str]:
 
 
 # --------------------------------------------------------------------------- #
-# CRM Dashboard APIs                                                           #
+# Secure CRM Dashboard APIs                                                    #
 # --------------------------------------------------------------------------- #
 
 @app.get("/api/dashboard/stats")
-async def get_dashboard_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
+async def get_dashboard_stats(
+    db: Session = Depends(get_db),
+    admin: str = Depends(require_admin)
+) -> Dict[str, Any]:
     all_jobs = db.query(Job).all()
     total_jobs = len(all_jobs)
     saved_count = sum(1 for j in all_jobs if j.status == "saved")
     applied_count = sum(1 for j in all_jobs if j.status == "applied")
     rejected_count = sum(1 for j in all_jobs if j.status in ["rejected", "not_applied"])
 
-    # Emailed count = successful pipeline runs where email was sent (CLI + Dashboard)
     emailed_runs_count = db.query(PipelineRun).filter(PipelineRun.email_sent == True).count()
 
     scores = [j.match_score for j in all_jobs if j.match_score is not None]
@@ -194,7 +314,8 @@ async def get_dashboard_jobs(
     source: Optional[str] = None,
     sort_by: str = "id",
     order: str = "desc",
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    admin: str = Depends(require_admin)
 ) -> Dict[str, Any]:
     query = db.query(Job)
     if status and status != "all":
@@ -231,7 +352,10 @@ async def get_dashboard_jobs(
 
 @app.post("/api/dashboard/jobs/{job_id}/action")
 async def execute_job_action(
-    job_id: int, payload: Dict[str, str], db: Session = Depends(get_db)
+    job_id: int,
+    payload: Dict[str, str],
+    db: Session = Depends(get_db),
+    admin: str = Depends(require_admin)
 ) -> Dict[str, Any]:
     action = payload.get("action")
     job = db.query(Job).filter(Job.id == job_id).first()
@@ -265,7 +389,7 @@ async def execute_job_action(
 
 
 @app.get("/api/dashboard/settings")
-async def get_agent_settings() -> Dict[str, Any]:
+async def get_agent_settings(admin: str = Depends(require_admin)) -> Dict[str, Any]:
     sched_jobs = []
     if scheduler.running:
         for j in scheduler.get_jobs():
@@ -294,7 +418,7 @@ async def get_agent_settings() -> Dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# SSE Pipeline Execution — streams each step with multi-wave 25 match target   #
+# SSE Pipeline Execution — streams each step with authentication             #
 # --------------------------------------------------------------------------- #
 
 @app.get("/api/pipeline/stream")
@@ -302,10 +426,11 @@ async def stream_pipeline(
     request: Request,
     target: int = 25,
     threshold: int = 70,
+    admin: str = Depends(require_admin)
 ):
     """
     Server-Sent Events endpoint that runs the multi-wave deduplicated pipeline inline
-    and streams real-time feedback until 25 unique qualified matches are found.
+    and streams real-time feedback. Protected with require_admin.
     """
     async def event_generator() -> AsyncGenerator[dict, None]:
         run_start = datetime.utcnow()
@@ -461,7 +586,6 @@ async def stream_pipeline(
                     if score >= threshold:
                         scored_jobs.append(job)
 
-                    # Throttle for Groq rate limits
                     await asyncio.sleep(3)
 
             # Sort and slice top target matches
