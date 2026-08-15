@@ -1,35 +1,28 @@
 # Core frameworks
-langgraph
-langchain
 langchain-groq
 langchain-community
-langsmith
 
 # LLM providers
 openai
 
 # Messaging
 twilio
-sendgrid
 
 # Database
-psycopg2-binary
 SQLAlchemy
-
-# Browser automation
-playwright
 
 # HTTP & scraping
 requests
 httpx
 beautifulsoup4
 
-# Scheduling
-APScheduler
-
 # Web server
 fastapi
 uvicorn[standard]
+sse-starlette
+
+# Scheduling
+APScheduler
 
 # Data validation
 pydantic
@@ -41,6 +34,7 @@ PyPDF2
 PyMuPDF
 python-dateutil==2.9.0.post0
 
+# Gmail OAuth
 google-api-python-client==2.118.0
 google-auth-httplib2==0.2.0
 google-auth-oauthlib==1.2.0

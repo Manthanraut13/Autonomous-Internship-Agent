@@ -3,35 +3,105 @@ main.py
 -------
 FastAPI application for the Autonomous Internship Agent.
 Serves the React dashboard, provides CRM APIs for browsing scraped jobs,
-and exposes a pipeline trigger endpoint.
+runs background 9 AM & 9 PM cron schedules, and streams pipeline execution
+in real-time via Server-Sent Events (SSE).
 """
 
 import os
+import sys
+import json
+import time
+import uuid
 import logging
+import asyncio
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, AsyncGenerator, List, Set, Tuple
 
-from fastapi import FastAPI, Depends, Request, UploadFile, File, HTTPException
+from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
+from sse_starlette.sse import EventSourceResponse
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 from config.settings import settings
-from db.database import get_db, init_db
-from db.models import Job
+from db.database import get_db, get_db_context, init_db
+from db.models import Job, PipelineRun
+
+# Ensure project root is on path
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 
 logging.basicConfig(level=logging.INFO if not settings.debug else logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+# Force UTF-8 output on Windows
+if sys.stdout.encoding != "utf-8":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 # Initialize database tables
 init_db()
 
+# --------------------------------------------------------------------------- #
+# Background Cron Scheduler (9:00 AM & 9:00 PM)                                #
+# --------------------------------------------------------------------------- #
+scheduler = AsyncIOScheduler()
+
+async def scheduled_pipeline_execution():
+    """Triggered by FastAPI AsyncIOScheduler at 9:00 AM & 9:00 PM daily."""
+    logger.info("⏰ [APScheduler] Triggering automatic 9 AM/9 PM pipeline run...")
+    try:
+        from run_pipeline import run as execute_pipeline
+        # Run synchronous pipeline in a background worker thread
+        res = await asyncio.to_thread(execute_pipeline, target_matches=25, threshold=settings.match_score_threshold)
+        logger.info(f"✅ [APScheduler] Scheduled pipeline run completed: {res}")
+    except Exception as exc:
+        logger.error(f"❌ [APScheduler] Scheduled pipeline execution failed: {exc}", exc_info=True)
+
+
 app = FastAPI(
     title="Autonomous Internship Agent API",
-    description="Dashboard API and pipeline trigger for the AI internship agent.",
-    version="2.0.0"
+    description="Dashboard API, Cron Scheduler, and live pipeline streaming for AI internship matching.",
+    version="2.2.0"
 )
+
+@app.on_event("startup")
+async def startup_event():
+    """Start background cron scheduler on application startup."""
+    try:
+        scheduler.add_job(
+            scheduled_pipeline_execution,
+            trigger=CronTrigger(hour=9, minute=0),
+            id="morning_run",
+            name="Morning Run (09:00 AM)",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            scheduled_pipeline_execution,
+            trigger=CronTrigger(hour=21, minute=0),
+            id="evening_run",
+            name="Evening Run (09:00 PM)",
+            replace_existing=True,
+        )
+        scheduler.start()
+        logger.info("📅 APScheduler started inside FastAPI (Runs scheduled at 09:00 AM and 09:00 PM).")
+    except Exception as e:
+        logger.warning(f"Could not start background scheduler: {e}")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Shutdown background scheduler cleanly."""
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
+        logger.info("📅 APScheduler stopped.")
+
 
 # CORS middleware
 app.add_middleware(
@@ -48,6 +118,7 @@ assets_dir = os.path.join(dist_dir, "assets")
 if os.path.exists(assets_dir):
     app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
+
 @app.get("/")
 @app.get("/dashboard")
 async def serve_dashboard():
@@ -57,40 +128,13 @@ async def serve_dashboard():
     return {"message": "Autonomous Internship Agent API running. Build frontend with 'npm run build' inside frontend/ to view dashboard."}
 
 
-@app.get("/status")
-async def get_status(db: Session = Depends(get_db)) -> Dict[str, Any]:
-    """
-    Returns today's jobs summary.
-    """
-    today = datetime.utcnow().date()
-    
-    # Filter jobs created/updated today
-    jobs_today = db.query(Job).filter(Job.updated_at >= today).all()
-    
-    saved_count = sum(1 for j in jobs_today if j.status == "saved")
-    emailed_count = sum(1 for j in jobs_today if j.status == "emailed")
-    
-    return {
-        "date": str(today),
-        "total_processed": len(jobs_today),
-        "saved_count": saved_count,
-        "emailed_count": emailed_count,
-    }
-
-
 @app.post("/upload-resume")
 async def upload_resume(file: UploadFile = File(...)) -> Dict[str, str]:
-    """
-    Accepts a resume file upload (PDF or TXT) and stores it locally.
-    """
     if not file.filename.lower().endswith(('.pdf', '.txt')):
         raise HTTPException(status_code=400, detail="Only PDF and TXT files are allowed.")
-        
     upload_dir = "data"
     os.makedirs(upload_dir, exist_ok=True)
-    
     file_path = os.path.join(upload_dir, "current_resume.pdf" if file.filename.endswith('.pdf') else "current_resume.txt")
-    
     try:
         contents = await file.read()
         with open(file_path, "wb") as f:
@@ -98,11 +142,7 @@ async def upload_resume(file: UploadFile = File(...)) -> Dict[str, str]:
     except Exception as e:
         logger.error(f"Error saving resume: {e}")
         raise HTTPException(status_code=500, detail="Failed to save resume.")
-        
-    return {
-        "status": "success",
-        "message": f"Resume {file.filename} uploaded successfully to {file_path}"
-    }
+    return {"status": "success", "message": f"Resume {file.filename} uploaded successfully."}
 
 
 # --------------------------------------------------------------------------- #
@@ -113,50 +153,36 @@ async def upload_resume(file: UploadFile = File(...)) -> Dict[str, str]:
 async def get_dashboard_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
     all_jobs = db.query(Job).all()
     total_jobs = len(all_jobs)
-    
     saved_count = sum(1 for j in all_jobs if j.status == "saved")
-    emailed_count = sum(1 for j in all_jobs if j.status == "emailed")
-    
+    applied_count = sum(1 for j in all_jobs if j.status == "applied")
+    rejected_count = sum(1 for j in all_jobs if j.status in ["rejected", "not_applied"])
+
+    # Emailed count = successful pipeline runs where email was sent (CLI + Dashboard)
+    emailed_runs_count = db.query(PipelineRun).filter(PipelineRun.email_sent == True).count()
+
     scores = [j.match_score for j in all_jobs if j.match_score is not None]
     avg_score = round(sum(scores) / len(scores), 1) if scores else 0.0
-    
-    # Distribution by source
-    sources_count = {}
+
+    sources_count: Dict[str, int] = {}
     for j in all_jobs:
         src = j.source or "other"
         sources_count[src] = sources_count.get(src, 0) + 1
-        
-    # Status distribution
-    status_count = {
-        "saved": saved_count,
-        "emailed": emailed_count,
-    }
-    
-    # Recent Activity (last 10 jobs)
-    recent_jobs = (
-        db.query(Job)
-        .order_by(Job.updated_at.desc())
-        .limit(10)
-        .all()
-    )
-    activity_list = []
-    for j in recent_jobs:
-        activity_list.append({
-            "id": j.id,
-            "title": j.title,
-            "company": j.company,
-            "status": j.status,
-            "match_score": j.match_score,
-            "updated_at": j.updated_at.isoformat() if j.updated_at else None,
-        })
-        
+
+    recent_jobs = db.query(Job).order_by(Job.updated_at.desc()).limit(10).all()
+    activity_list = [{
+        "id": j.id, "title": j.title, "company": j.company,
+        "status": j.status, "match_score": j.match_score,
+        "updated_at": j.updated_at.isoformat() if j.updated_at else None,
+    } for j in recent_jobs]
+
     return {
         "total_jobs": total_jobs,
         "saved_count": saved_count,
-        "emailed_count": emailed_count,
+        "applied_count": applied_count,
+        "rejected_count": rejected_count,
+        "emailed_count": emailed_runs_count,
         "avg_match_score": avg_score,
         "sources_distribution": sources_count,
-        "status_distribution": status_count,
         "recent_activity": activity_list,
     }
 
@@ -171,94 +197,84 @@ async def get_dashboard_jobs(
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     query = db.query(Job)
-    
     if status and status != "all":
-        query = query.filter(Job.status == status)
-            
+        if status in ["rejected", "not_applied"]:
+            query = query.filter(Job.status.in_(["rejected", "not_applied"]))
+        else:
+            query = query.filter(Job.status == status)
     if source and source != "all":
         query = query.filter(Job.source == source)
-        
     if search:
         search_fmt = f"%{search}%"
         query = query.filter(
-            (Job.title.ilike(search_fmt)) |
-            (Job.company.ilike(search_fmt)) |
-            (Job.description.ilike(search_fmt))
+            (Job.title.ilike(search_fmt)) | (Job.company.ilike(search_fmt))
         )
-        
     if sort_by == "match_score":
         query = query.order_by(Job.match_score.desc() if order == "desc" else Job.match_score.asc())
     else:
         query = query.order_by(Job.id.desc() if order == "desc" else Job.id.asc())
-        
+
     jobs = query.all()
-    
-    results = []
-    for j in jobs:
-        results.append({
-            "id": j.id,
-            "job_id": j.job_id,
-            "title": j.title,
-            "company": j.company,
-            "description": j.description,
-            "link": j.link,
-            "apply_url": j.apply_url or "",
-            "location": j.location or "",
-            "source": j.source,
-            "posted_at": j.posted_at.isoformat() if j.posted_at else None,
-            "scraped_at": j.scraped_at.isoformat() if j.scraped_at else None,
-            "updated_at": j.updated_at.isoformat() if j.updated_at else None,
-            "match_score": j.match_score,
-            "match_reasoning": j.match_reasoning,
-            "status": j.status,
-        })
-        
+    results = [{
+        "id": j.id, "job_id": j.job_id, "title": j.title,
+        "company": j.company, "description": j.description,
+        "link": j.link, "apply_url": j.apply_url or "",
+        "location": j.location or "", "source": j.source,
+        "posted_at": j.posted_at.isoformat() if j.posted_at else None,
+        "scraped_at": j.scraped_at.isoformat() if j.scraped_at else None,
+        "updated_at": j.updated_at.isoformat() if j.updated_at else None,
+        "match_score": j.match_score, "match_reasoning": j.match_reasoning,
+        "status": j.status,
+    } for j in jobs]
     return {"total": len(results), "jobs": results}
 
 
 @app.post("/api/dashboard/jobs/{job_id}/action")
 async def execute_job_action(
-    job_id: int,
-    payload: Dict[str, str],
-    db: Session = Depends(get_db)
+    job_id: int, payload: Dict[str, str], db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     action = payload.get("action")
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-        
+
     if action == "delete":
         db.delete(job)
         db.commit()
         return {"status": "success", "message": f"Job #{job_id} deleted."}
-        
-    else:
-        raise HTTPException(status_code=400, detail="Invalid action. Only 'delete' is supported.")
 
+    elif action == "mark_applied":
+        job.status = "applied"
+        job.updated_at = datetime.utcnow()
+        db.commit()
+        return {"status": "success", "message": f"Job #{job_id} marked as applied."}
 
-@app.post("/api/dashboard/run-pipeline")
-async def trigger_pipeline_search(
-    payload: Dict[str, Any],
-    db: Session = Depends(get_db)
-) -> Dict[str, Any]:
-    query = payload.get("query", "AI Automation Intern")
-    limit = int(payload.get("limit", 5))
-    threshold = int(payload.get("threshold", 70))
-    
-    import subprocess
-    import sys
-    
-    cmd = [sys.executable, "run_pipeline.py", "--limit", str(limit), "--threshold", str(threshold)]
-    subprocess.Popen(cmd, cwd=os.getcwd())
-    
-    return {
-        "status": "started",
-        "message": f"Pipeline launched in background (limit={limit}, threshold={threshold}). CSV report will be emailed when complete."
-    }
+    elif action in ["mark_not_applied", "reject"]:
+        job.status = "rejected"
+        job.updated_at = datetime.utcnow()
+        db.commit()
+        return {"status": "success", "message": f"Job #{job_id} marked as not applied."}
+
+    elif action in ["mark_saved", "restore"]:
+        job.status = "saved"
+        job.updated_at = datetime.utcnow()
+        db.commit()
+        return {"status": "success", "message": f"Job #{job_id} moved back to Inbox."}
+
+    raise HTTPException(status_code=400, detail=f"Invalid action '{action}'.")
 
 
 @app.get("/api/dashboard/settings")
 async def get_agent_settings() -> Dict[str, Any]:
+    sched_jobs = []
+    if scheduler.running:
+        for j in scheduler.get_jobs():
+            sched_jobs.append({
+                "id": j.id,
+                "name": j.name,
+                "next_run": j.next_run_time.isoformat() if j.next_run_time else None
+            })
+
     return {
         "groq_model": settings.groq_model,
         "match_score_threshold": settings.match_score_threshold,
@@ -266,12 +282,314 @@ async def get_agent_settings() -> Dict[str, Any]:
         "twilio_phone_number": settings.twilio_phone_number,
         "job_sources": settings.job_sources,
         "recipient_email": settings.recipient_email,
-        "debug": settings.debug,
         "candidate_name": settings.candidate_name,
         "candidate_email": settings.candidate_email,
-        "candidate_github": settings.candidate_github,
-        "candidate_linkedin": settings.candidate_linkedin,
+        "cron_schedule": {
+            "active": scheduler.running,
+            "morning": "09:00 AM",
+            "evening": "09:00 PM",
+            "jobs": sched_jobs
+        }
     }
+
+
+# --------------------------------------------------------------------------- #
+# SSE Pipeline Execution — streams each step with multi-wave 25 match target   #
+# --------------------------------------------------------------------------- #
+
+@app.get("/api/pipeline/stream")
+async def stream_pipeline(
+    request: Request,
+    target: int = 25,
+    threshold: int = 70,
+):
+    """
+    Server-Sent Events endpoint that runs the multi-wave deduplicated pipeline inline
+    and streams real-time feedback until 25 unique qualified matches are found.
+    """
+    async def event_generator() -> AsyncGenerator[dict, None]:
+        run_start = datetime.utcnow()
+        email_sent = False
+        whatsapp_sent = False
+        csv_path = None
+        scored_jobs: List[Dict[str, Any]] = []
+
+        def evt(step: str, message: str, data: Any = None) -> dict:
+            payload = {"step": step, "message": message, "timestamp": datetime.utcnow().isoformat()}
+            if data is not None:
+                payload["data"] = data
+            return {"event": "pipeline", "data": json.dumps(payload)}
+
+        try:
+            # ── Step 1: Parse resume ─────────────────────────────────────
+            yield evt("resume", "Locating and parsing candidate resume...")
+            await asyncio.sleep(0.1)
+
+            from tools.resume_parser import extract_text_from_pdf, get_search_queries_from_resume
+
+            resume_path = None
+            for candidate in [
+                os.path.join(BASE_DIR, "Manthan_Raut_Resume (1).pdf"),
+                os.path.join(BASE_DIR, "data", "current_resume.pdf"),
+            ]:
+                if os.path.isfile(candidate):
+                    resume_path = candidate
+                    break
+
+            if not resume_path:
+                yield evt("error", "No resume found. Place your PDF in the project root.")
+                return
+
+            resume_text = extract_text_from_pdf(resume_path)
+            yield evt("resume", f"Resume loaded: {os.path.basename(resume_path)} ({len(resume_text)} chars)")
+            await asyncio.sleep(0.1)
+
+            # ── Step 2: Generate search queries ──────────────────────────
+            yield evt("queries", "Generating AI, GenAI & Automation search queries...")
+            await asyncio.sleep(0.1)
+
+            search_queries = get_search_queries_from_resume(resume_path)
+            core_ai_queries = [
+                "AI Consultant Intern", "AI Automation Intern", "GenAI Developer Intern",
+                "Agentic AI Intern", "LLM Engineer Intern", "AI ML Intern",
+                "AI Python Developer Intern", "Full Stack AI Developer Intern",
+                "AI Data Analyst Intern", "AI Automation Engineer Intern"
+            ]
+            for q in core_ai_queries:
+                if q not in search_queries:
+                    search_queries.append(q)
+
+            yield evt("queries", f"Active AI Queries ({len(search_queries)}): {', '.join(search_queries[:5])}...", search_queries)
+            await asyncio.sleep(0.1)
+
+            # ── Step 3: Load existing DB signatures to prevent duplicates ─
+            with get_db_context() as db:
+                db_links = set(r[0].strip().lower() for r in db.query(Job.link).all() if r[0])
+                db_apply_urls = set(r[0].strip().lower() for r in db.query(Job.apply_url).all() if r[0])
+                db_signatures = set((r[0].strip().lower(), r[1].strip().lower()) for r in db.query(Job.title, Job.company).all() if r[0] and r[1])
+
+            yield evt("queries", f"Loaded {len(db_links)} database records to enforce cross-run deduplication.")
+            await asyncio.sleep(0.1)
+
+            # ── Step 4: Multi-Wave Scraping & Scoring Loop ───────────────
+            from tools.job_api import fetch_jobs
+            from tools.jd_matcher import match_resume_to_job
+
+            seen_in_run_links: Set[str] = set()
+            seen_in_run_signatures: Set[Tuple[str, str]] = set()
+            max_waves = 4
+            total_scraped_count = 0
+
+            for wave in range(1, max_waves + 1):
+                if len(scored_jobs) >= target:
+                    break
+
+                start_offset = (wave - 1) * 20
+                yield evt("scraping", f"🌊 Wave {wave}/{max_waves} (Offset: {start_offset}) — Target remaining: {target - len(scored_jobs)} matches...")
+                await asyncio.sleep(0.1)
+
+                wave_jobs: List[Dict[str, Any]] = []
+
+                for query in search_queries:
+                    if await request.is_disconnected():
+                        return
+                    if len(scored_jobs) >= target:
+                        break
+
+                    yield evt("scraping", f"Fetching: \"{query}\" (limit=10, 24h)...")
+                    raw_jobs = await asyncio.to_thread(fetch_jobs, query, 10, 24, start_offset)
+                    total_scraped_count += len(raw_jobs)
+
+                    for j in raw_jobs:
+                        link = (j.get("link") or "").strip().lower()
+                        apply_url = (j.get("apply_url") or "").strip().lower()
+                        title = (j.get("title") or "").strip().lower()
+                        company = (j.get("company") or "").strip().lower()
+                        sig = (title, company)
+
+                        if (link in db_links or
+                            apply_url in db_apply_urls or
+                            sig in db_signatures or
+                            link in seen_in_run_links or
+                            sig in seen_in_run_signatures):
+                            continue
+
+                        if link: seen_in_run_links.add(link)
+                        if apply_url: seen_in_run_links.add(apply_url)
+                        if title and company: seen_in_run_signatures.add(sig)
+                        wave_jobs.append(j)
+
+                    await asyncio.sleep(0.05)
+
+                yield evt("scraping", f"Wave {wave} yielded {len(wave_jobs)} fresh unique postings to evaluate.")
+                await asyncio.sleep(0.1)
+
+                # Score wave candidates
+                for i, job in enumerate(wave_jobs, 1):
+                    if await request.is_disconnected():
+                        return
+                    if len(scored_jobs) >= target:
+                        break
+
+                    title = job["title"]
+                    company = job["company"]
+                    desc = job.get("description", "")
+
+                    if not desc or len(desc.strip()) < 30:
+                        yield evt("matching", f"[{i}/{len(wave_jobs)}] ⏭ Skipped: {title} @ {company} (no description)")
+                        continue
+
+                    yield evt("matching", f"[{len(scored_jobs)}/{target} Matches] 🔄 Scoring: {title} @ {company}...")
+
+                    try:
+                        result = await asyncio.to_thread(match_resume_to_job, resume_text, desc)
+                        score = result.get("score", 0)
+                        reasoning = result.get("reasoning", "")
+                        key_matches = result.get("key_matches", [])
+                    except Exception as e:
+                        yield evt("matching", f"[{i}/{len(wave_jobs)}] ❌ Error scoring {title}: {e}")
+                        continue
+
+                    job["match_score"] = score
+                    job["match_reasoning"] = reasoning
+                    job["key_matches"] = key_matches
+
+                    emoji = "✅" if score >= threshold else "⬇️"
+                    yield evt("matching", f"[{len(scored_jobs)+1}/{target}] {emoji} {title} @ {company} → {score}/100",
+                              {"title": title, "company": company, "score": score})
+
+                    if score >= threshold:
+                        scored_jobs.append(job)
+
+                    # Throttle for Groq rate limits
+                    await asyncio.sleep(3)
+
+            # Sort and slice top target matches
+            scored_jobs.sort(key=lambda x: x.get("match_score", 0), reverse=True)
+            final_jobs = scored_jobs[:target]
+
+            yield evt("matching", f"Scoring complete! Found {len(final_jobs)} qualified unique AI matches ({threshold}+ threshold).",
+                      {"matched": len(final_jobs), "total_scraped": total_scraped_count})
+            await asyncio.sleep(0.1)
+
+            if not final_jobs:
+                yield evt("complete", "No postings met the threshold in the last 24h. Pipeline finished.", {"matched": 0})
+                with get_db_context() as db:
+                    run_log = PipelineRun(
+                        started_at=run_start,
+                        completed_at=datetime.utcnow(),
+                        status="success",
+                        jobs_found=total_scraped_count,
+                        jobs_matched=0,
+                        email_sent=False,
+                        source="dashboard"
+                    )
+                    db.add(run_log)
+                return
+
+            # ── Step 5: Save to Database ─────────────────────────────────
+            yield evt("saving", f"Saving {len(final_jobs)} new listings to SQLite...")
+            await asyncio.sleep(0.1)
+
+            import dateutil.parser as dp
+
+            with get_db_context() as db:
+                for job in final_jobs:
+                    posted_at_val = job.get("posted_at")
+                    if isinstance(posted_at_val, str) and posted_at_val:
+                        try: posted_at_val = dp.parse(posted_at_val)
+                        except Exception: posted_at_val = None
+                    elif not posted_at_val:
+                        posted_at_val = None
+
+                    db_job = Job(
+                        job_id=f"job-{uuid.uuid4().hex[:8]}",
+                        title=job["title"],
+                        company=job["company"],
+                        description=job.get("description", "")[:2000],
+                        link=job["link"],
+                        apply_url=job.get("apply_url", ""),
+                        location=job.get("location", "Remote"),
+                        source=job.get("source", "aggregated"),
+                        posted_at=posted_at_val,
+                        match_score=job["match_score"],
+                        match_reasoning=job.get("match_reasoning", ""),
+                        status="saved",
+                    )
+                    db.add(db_job)
+                db.commit()
+
+            yield evt("saving", f"Saved {len(final_jobs)} unique listings to database.")
+            await asyncio.sleep(0.1)
+
+            # ── Step 6: Export CSV ───────────────────────────────────────
+            yield evt("csv", "Generating structured CSV report with direct apply links...")
+            await asyncio.sleep(0.1)
+
+            from tools.csv_exporter import export_jobs_to_csv
+
+            csv_filename = f"internships_{time.strftime('%Y%m%d_%H%M%S')}.csv"
+            csv_path = await asyncio.to_thread(export_jobs_to_csv, final_jobs, csv_filename)
+
+            if csv_path:
+                yield evt("csv", f"CSV report exported: {csv_filename}")
+            await asyncio.sleep(0.1)
+
+            # ── Step 7: Email CSV ────────────────────────────────────────
+            if csv_path:
+                yield evt("email", f"Delivering CSV report to {settings.recipient_email} via Gmail OAuth...")
+                await asyncio.sleep(0.1)
+
+                from tools.email_sender import send_csv_email
+
+                email_sent = await asyncio.to_thread(send_csv_email, csv_path, len(final_jobs))
+                if email_sent:
+                    yield evt("email", f"✅ CSV report delivered to {settings.recipient_email}!")
+                else:
+                    yield evt("email", "⚠️ Email delivery failed or is not configured.")
+                await asyncio.sleep(0.1)
+
+            # ── Step 8: WhatsApp Notification ────────────────────────────
+            yield evt("whatsapp", "Sending WhatsApp summary notification...")
+            await asyncio.sleep(0.1)
+
+            if settings.whatsapp_from and settings.user_whatsapp_number:
+                from tools.whatsapp_handler import send_whatsapp_summary
+                whatsapp_sent = await asyncio.to_thread(send_whatsapp_summary, settings.user_whatsapp_number, final_jobs)
+                if whatsapp_sent:
+                    yield evt("whatsapp", "📲 WhatsApp notification sent successfully!")
+                else:
+                    yield evt("whatsapp", "⚠️ WhatsApp notification failed.")
+            else:
+                yield evt("whatsapp", "WhatsApp notification skipped (not fully configured).")
+            await asyncio.sleep(0.1)
+
+            # ── Step 9: Save Run Log ─────────────────────────────────────
+            with get_db_context() as db:
+                run_log = PipelineRun(
+                    started_at=run_start,
+                    completed_at=datetime.utcnow(),
+                    status="success",
+                    jobs_found=total_scraped_count,
+                    jobs_matched=len(final_jobs),
+                    email_sent=bool(email_sent),
+                    whatsapp_sent=bool(whatsapp_sent),
+                    csv_path=csv_path,
+                    source="dashboard"
+                )
+                db.add(run_log)
+                db.commit()
+
+            # ── Complete ─────────────────────────────────────────────────
+            yield evt("complete", f"Pipeline complete! {len(final_jobs)} unique AI listings delivered.",
+                      {"matched": len(final_jobs), "total_scraped": total_scraped_count})
+
+        except Exception as e:
+            logger.error(f"Pipeline stream error: {e}", exc_info=True)
+            yield evt("error", f"Pipeline error: {str(e)}")
+
+    return EventSourceResponse(event_generator())
+
 
 if __name__ == "__main__":
     import uvicorn

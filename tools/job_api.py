@@ -65,7 +65,7 @@ def _clean_html(text: str) -> str:
 # ---------------------------------------------------------------------------
 # 1. LinkedIn Jobs API
 # ---------------------------------------------------------------------------
-def fetch_linkedin_jobs(search_query: str = "python developer", location: str = "India", limit: int = 10, posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+def fetch_linkedin_jobs(search_query: str = "python developer", location: str = "India", limit: int = 10, posted_within_hours: int = 24, start_offset: int = 0) -> List[Dict[str, Any]]:
     if requests is None or BeautifulSoup is None:
         return []
 
@@ -76,7 +76,7 @@ def fetch_linkedin_jobs(search_query: str = "python developer", location: str = 
         
         # Add time filter to LinkedIn (r86400 = past 24 hours, r604800 = past week)
         time_filter = "r86400" if posted_within_hours <= 24 else "r604800"
-        url = f"{LINKEDIN_GUEST_API_URL}?keywords={encoded_query}&location={encoded_loc}&f_TPR={time_filter}&start=0"
+        url = f"{LINKEDIN_GUEST_API_URL}?keywords={encoded_query}&location={encoded_loc}&f_TPR={time_filter}&start={start_offset}"
 
         resp = requests.get(url, headers=HEADERS, timeout=12)
         if resp.status_code == 200:
@@ -330,7 +330,7 @@ def fetch_adzuna_jobs(search_query: str = "software engineer", limit: int = 10, 
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def fetch_jobs(search_query: str = "software engineer", limit: int = 10, posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+def fetch_jobs(search_query: str = "software engineer", limit: int = 10, posted_within_hours: int = 24, start_offset: int = 0) -> List[Dict[str, Any]]:
     """
     Main entry point — combines real jobs from multiple platforms.
     Priority: JSearch > LinkedIn > Arbeitnow > Remotive > Himalayas > Adzuna > Apollo
@@ -353,7 +353,12 @@ def fetch_jobs(search_query: str = "software engineer", limit: int = 10, posted_
 
     # 2. LinkedIn Jobs 
     if len(all_jobs) < limit:
-        linkedin_jobs = fetch_linkedin_jobs(search_query, limit=limit - len(all_jobs), posted_within_hours=posted_within_hours)
+        linkedin_jobs = fetch_linkedin_jobs(
+            search_query,
+            limit=limit - len(all_jobs),
+            posted_within_hours=posted_within_hours,
+            start_offset=start_offset
+        )
         _add_unique(linkedin_jobs)
 
     # 3. Arbeitnow API 

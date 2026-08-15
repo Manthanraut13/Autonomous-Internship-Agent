@@ -4,16 +4,11 @@ db/models.py
 SQLAlchemy ORM models for the Autonomous Internship Agent.
 
 Models:
-    Job              - Internship listings scraped from job platforms.
-    Application      - Records of submitted job applications.
-    WhatsAppResponse - User approval / rejection responses via WhatsApp.
-
-Relationships:
-    Job  1──* Application
-    Job  1──* WhatsAppResponse
+    Job         - Internship listings scraped from job platforms.
+    PipelineRun - Execution history of pipeline runs (CLI and Dashboard).
 
 Usage:
-    from db.models import Base, Job, Application, WhatsAppResponse
+    from db.models import Base, Job, PipelineRun
     from db.database import engine
     Base.metadata.create_all(bind=engine)
 """
@@ -27,60 +22,55 @@ from sqlalchemy import (
     Column,
     DateTime,
     Float,
-    ForeignKey,
     Integer,
     String,
     Text,
     UniqueConstraint,
 )
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
 
-# Shared declarative base — every model must inherit from this
+# Shared declarative base
 Base = declarative_base()
-Base.__allow_unmapped__ = True  # allow legacy relationship annotations without Mapped[]
+Base.__allow_unmapped__ = True
 
 
 # =========================================================================== #
-# 1. Job Model                                                                 #
+# Job Model                                                                     #
 # =========================================================================== #
 
 class Job(Base):
     """
     Represents a single internship / job listing scraped from an external
-    platform (Indeed, LinkedIn, internship.com, etc.).
+    platform (Remotive, Arbeitnow, Himalayas, LinkedIn, etc.).
 
     Attributes:
-        id           : Auto-incremented primary key.
-        job_id       : Platform-specific unique job identifier string.
-        title        : Job / internship title.
-        company      : Name of the hiring company.
-        description  : Full job description text.
-        link         : Direct URL to the job posting.
-        source       : Platform name (e.g. 'indeed', 'linkedin').
-        scraped_at   : UTC timestamp when this record was created.
-        match_score  : LLM-assigned relevance score (0.0 – 100.0), nullable
-                       until the matcher node processes this job.
-        status       : Workflow status for this job.
-                       One of: 'pending' | 'approved' | 'rejected' |
-                                'applied' | 'skipped' | 'error'
-
-    Relationships:
-        applications       : List[Application]       (one-to-many)
-        whatsapp_responses : List[WhatsAppResponse]  (one-to-many)
+        id              : Auto-incremented primary key.
+        job_id          : Platform-specific unique job identifier string.
+        title           : Job / internship title.
+        company         : Name of the hiring company.
+        location        : Job location (city/remote).
+        description     : Full job description text.
+        link            : Direct URL to the job posting.
+        apply_url       : Direct application URL.
+        source          : Platform name (e.g. 'remotive', 'arbeitnow').
+        posted_at       : When the job was originally posted.
+        scraped_at      : UTC timestamp when this record was created.
+        updated_at      : UTC timestamp of last update.
+        match_score     : LLM-assigned relevance score (0.0 – 100.0).
+        match_reasoning : LLM explanation for the score.
+        status          : 'saved' (Inbox) | 'applied' | 'rejected' (Not Applied)
     """
 
     __tablename__ = "jobs"
 
     __table_args__ = (
-        # Prevent storing the same platform-specific job twice
         UniqueConstraint("job_id", "source", name="uq_job_id_source"),
     )
 
     # Primary key
     id = Column(Integer, primary_key=True, autoincrement=True)
 
-    # Platform-specific identifier (e.g. Indeed's job key)
+    # Platform-specific identifier
     job_id = Column(String(255), nullable=False, index=True)
 
     # Core job details
@@ -90,7 +80,7 @@ class Job(Base):
     description = Column(Text, nullable=True)
     link = Column(String(1000), nullable=False)
     apply_url = Column(String(1000), nullable=True)
-    source = Column(String(50), nullable=False, index=True)  # 'indeed' | 'linkedin' | ...
+    source = Column(String(50), nullable=False, index=True)
 
     # Timestamps
     posted_at = Column(DateTime, nullable=True)
@@ -103,31 +93,18 @@ class Job(Base):
     )
 
     # Matching
-    match_score = Column(Float, nullable=True)          # set by matcher node
-    match_reasoning = Column(Text, nullable=True)       # LLM explanation
+    match_score = Column(Float, nullable=True)
+    match_reasoning = Column(Text, nullable=True)
 
-    # Workflow lifecycle status
+    # Workflow lifecycle status: 'saved' (Inbox/New), 'applied', 'rejected' (Not Applied)
     status = Column(
         String(50),
         nullable=False,
-        default="pending",
+        default="saved",
         index=True,
     )
 
-    # Relationships
-    applications = relationship(
-        "Application",
-        back_populates="job",
-        cascade="all, delete-orphan",
-    )
-    whatsapp_responses = relationship(
-        "WhatsAppResponse",
-        back_populates="job",
-        cascade="all, delete-orphan",
-    )
-
     def __repr__(self) -> str:
-        """Human-readable representation for debugging."""
         return (
             f"<Job(id={self.id}, title='{self.title}', "
             f"company='{self.company}', status='{self.status}', "
@@ -136,124 +113,30 @@ class Job(Base):
 
 
 # =========================================================================== #
-# 2. Application Model                                                         #
+# PipelineRun Model                                                            #
 # =========================================================================== #
 
-class Application(Base):
+class PipelineRun(Base):
     """
-    Records a single job application submitted by the agent on behalf of
-    the user.
-
-    Attributes:
-        id               : Auto-incremented primary key.
-        job_id           : Foreign key → jobs.id.
-        applied_at       : UTC timestamp when the application was submitted.
-        application_id   : Platform-returned confirmation / reference ID.
-        status           : Current state of the application.
-                           One of: 'submitted' | 'pending' | 'rejected' |
-                                    'accepted' | 'error'
-        application_link : Direct link to the submitted application page.
-
-    Relationships:
-        job : Job (many-to-one)
+    Logs every execution of the pipeline (whether triggered from CLI or Dashboard).
+    Used to track accurate stats on successfully emailed reports.
     """
 
-    __tablename__ = "applications"
+    __tablename__ = "pipeline_runs"
 
-    # Primary key
     id = Column(Integer, primary_key=True, autoincrement=True)
-
-    # Foreign key to the job listing
-    job_id = Column(
-        Integer,
-        ForeignKey("jobs.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-
-    # Submission details
-    applied_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    application_id = Column(String(255), nullable=True)    # confirmation ID from platform
-    status = Column(
-        String(50),
-        nullable=False,
-        default="submitted",
-        index=True,
-    )
-    application_link = Column(String(1000), nullable=True)  # link to submitted application
-
-    # Timestamps
-    updated_at = Column(
-        DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-        nullable=False,
-    )
-
-    # Relationships
-    job = relationship("Job", back_populates="applications")
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+    status = Column(String(50), default="running", nullable=False)  # 'success', 'failed', 'running'
+    jobs_found = Column(Integer, default=0)
+    jobs_matched = Column(Integer, default=0)
+    email_sent = Column(Boolean, default=False)
+    whatsapp_sent = Column(Boolean, default=False)
+    csv_path = Column(String(500), nullable=True)
+    source = Column(String(50), default="cli")  # 'cli' | 'dashboard'
 
     def __repr__(self) -> str:
-        """Human-readable representation for debugging."""
         return (
-            f"<Application(id={self.id}, job_id={self.job_id}, "
-            f"status='{self.status}', applied_at={self.applied_at})>"
-        )
-
-
-# =========================================================================== #
-# 3. WhatsAppResponse Model                                                    #
-# =========================================================================== #
-
-class WhatsAppResponse(Base):
-    """
-    Stores the user's approval or rejection response received via WhatsApp
-    for a particular job listing.
-
-    Attributes:
-        id            : Auto-incremented primary key.
-        job_id        : Foreign key → jobs.id.
-        user_approval : True = approved / False = rejected / None = pending.
-        responded_at  : UTC timestamp when the user replied.
-        message_sid   : Twilio message SID of the inbound reply.
-        sent_at       : UTC timestamp when the approval request was sent out.
-        sent_message_sid : Twilio SID of the outbound approval request.
-
-    Relationships:
-        job : Job (many-to-one)
-    """
-
-    __tablename__ = "whatsapp_responses"
-
-    # Primary key
-    id = Column(Integer, primary_key=True, autoincrement=True)
-
-    # Foreign key to the job listing
-    job_id = Column(
-        Integer,
-        ForeignKey("jobs.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-
-    # User response
-    user_approval = Column(Boolean, nullable=True)   # None = no reply yet
-    responded_at = Column(DateTime, nullable=True)   # set when user replies
-
-    # Twilio message identifiers
-    message_sid = Column(String(50), nullable=True)        # SID of inbound reply
-    sent_message_sid = Column(String(50), nullable=True)   # SID of outbound request
-
-    # Timestamps
-    sent_at = Column(DateTime, default=datetime.utcnow, nullable=False)  # when request sent
-
-    # Relationships
-    job = relationship("Job", back_populates="whatsapp_responses")
-
-    def __repr__(self) -> str:
-        """Human-readable representation for debugging."""
-        return (
-            f"<WhatsAppResponse(id={self.id}, job_id={self.job_id}, "
-            f"user_approval={self.user_approval}, "
-            f"responded_at={self.responded_at})>"
+            f"<PipelineRun(id={self.id}, status='{self.status}', "
+            f"jobs_matched={self.jobs_matched}, email_sent={self.email_sent})>"
         )
