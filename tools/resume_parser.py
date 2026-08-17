@@ -480,25 +480,19 @@ def segment_resume_text(raw_text: str) -> Dict[str, List[str]]:
     return structured
 
 
-def get_search_queries_from_resume(file_path: str, max_queries: int = 6) -> List[str]:
+def get_search_queries_from_resume(file_path: str, max_queries: int = 8) -> List[str]:
     """
-    Dynamically generates relevant internship/job search queries based on the candidate's
-    resume skills, projects, and professional background.
+    Generates strictly AI-related internship search queries.
+    Every query MUST be in the AI / GenAI / LLM / Agentic AI / AI Automation domain.
+    No generic software, web dev, data analyst, or full-stack queries allowed.
 
-    Focused on AI, GenAI, Agentic AI, and automation roles.
-
-    Examples:
-      - 'AI Consultant Intern'
-      - 'GenAI Developer Intern'
-      - 'Agentic AI Intern'
-      - 'AI Automation Intern'
-      - 'LLM Engineer Intern'
+    Also includes startup-focused AI query variants to prioritize startup openings.
     """
     profile = get_candidate_profile_from_resume(file_path)
     skills = [s.lower() for s in profile.get("skills", [])]
     summary = profile.get("summary", "").lower()
     exp_titles = [e.get("title", "").lower() for e in profile.get("experience", [])]
-    
+
     all_context = f"{' '.join(skills)} {summary} {' '.join(exp_titles)}"
 
     queries: List[str] = []
@@ -507,35 +501,36 @@ def get_search_queries_from_resume(file_path: str, max_queries: int = 6) -> List
         if q not in queries:
             queries.append(q)
 
-    # ── Primary AI-focused queries (always included) ─────────────────────
-    _add_query("AI Consultant Intern")
+    # ── Strictly AI-only queries (always included) ────────────────────
+    _add_query("AI Intern")
     _add_query("AI Automation Intern")
     _add_query("GenAI Developer Intern")
+    _add_query("Agentic AI Intern")
 
-    # ── Skill-based dynamic AI queries ───────────────────────────────────
+    # ── Skill-based AI-only queries ───────────────────────────────────
     if any(k in all_context for k in ["langchain", "llm", "openai", "gpt", "prompt", "rag", "agent", "crewai"]):
-        _add_query("Agentic AI Intern")
         _add_query("LLM Engineer Intern")
+        _add_query("AI Agent Developer Intern")
 
     if any(k in all_context for k in ["ai", "machine learning", "ml", "deep learning", "nlp", "transformer"]):
         _add_query("AI ML Intern")
+        _add_query("Machine Learning Intern")
 
-    if any(k in all_context for k in ["python", "fastapi", "django", "flask"]):
-        _add_query("AI Python Developer Intern")
-
-    if any(k in all_context for k in ["react", "javascript", "typescript", "full stack", "fullstack"]):
-        _add_query("Full Stack AI Developer Intern")
-
-    if any(k in all_context for k in ["data", "sql", "analytics", "postgresql", "pandas"]):
-        _add_query("AI Data Analyst Intern")
-
-    if any(k in all_context for k in ["automation", "playwright", "selenium", "n8n", "zapier"]):
+    if any(k in all_context for k in ["automation", "playwright", "selenium", "n8n", "zapier", "workflow"]):
         _add_query("AI Automation Engineer Intern")
 
-    # Always ensure at least 4 AI-focused queries
-    if len(queries) < 4:
-        _add_query("Agentic AI Intern")
-        _add_query("LLM Engineer Intern")
+    if any(k in all_context for k in ["computer vision", "opencv", "image", "yolo", "detection"]):
+        _add_query("Computer Vision AI Intern")
+
+    if any(k in all_context for k in ["nlp", "text", "sentiment", "chatbot", "conversational"]):
+        _add_query("NLP AI Intern")
+
+    # Always ensure minimum 6 AI-only queries
+    fallbacks = ["LLM Engineer Intern", "AI ML Intern", "AI Agent Developer Intern", "Machine Learning Intern"]
+    for fb in fallbacks:
+        if len(queries) >= max_queries:
+            break
+        _add_query(fb)
 
     return queries[:max_queries]
 

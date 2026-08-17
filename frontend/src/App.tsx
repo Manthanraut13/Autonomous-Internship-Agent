@@ -432,7 +432,7 @@ export default function App() {
             </div>
             <div className="kpi-card">
               <div className="kpi-label">Emailed Reports</div>
-              <div className="kpi-value blue">{stats?.emailed_count ?? '—'}</div>
+              <div className="kpi-value cold-teal">{stats?.emailed_count ?? '—'}</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-label">Avg Match Score</div>
@@ -484,11 +484,11 @@ export default function App() {
             </div>
             <select className="filter-select" value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}>
               <option value="all">All Sources</option>
-              <option value="remotive">Remotive</option>
-              <option value="arbeitnow">Arbeitnow</option>
-              <option value="himalayas">Himalayas</option>
+              <option value="jobicy">Jobicy (Startups)</option>
+              <option value="himalayas">Himalayas (Startups)</option>
+              <option value="arbeitnow">Arbeitnow (Startups)</option>
+              <option value="remotive">Remotive (Startups)</option>
               <option value="linkedin">LinkedIn</option>
-              <option value="indeed">Indeed</option>
               <option value="jsearch">JSearch</option>
             </select>
             <button className="btn btn-ghost" onClick={fetchData} title="Refresh data">
@@ -713,7 +713,7 @@ export default function App() {
             </div>
             <div className="setting-item">
               <span className="key">Evening Run</span>
-              <span className="val" style={{ color: 'var(--blue)' }}>09:00 PM (Daily)</span>
+              <span className="val" style={{ color: 'var(--cold-teal)' }}>09:00 PM (Daily)</span>
             </div>
             <div className="setting-item">
               <span className="key">Target Output</span>

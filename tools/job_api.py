@@ -278,12 +278,72 @@ def fetch_himalayas_jobs(search_query: str = "python", limit: int = 10, posted_w
 # ---------------------------------------------------------------------------
 # 5. Adzuna API
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 5. Jobicy Startup API (Direct remote/startup listings)
+# ---------------------------------------------------------------------------
+JOBICY_API_URL = "https://jobicy.com/api/v2/remote-jobs"
+
+def fetch_jobicy_jobs(search_query: str = "ai", limit: int = 10, posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """Fetches remote startup AI/tech jobs from Jobicy public API."""
+    if requests is None:
+        return []
+
+    jobs: List[Dict[str, Any]] = []
+    try:
+        tag = "ai" if "ai" in search_query.lower() else "artificial-intelligence"
+        url = f"{JOBICY_API_URL}?count=50&tag={tag}"
+        resp = requests.get(url, headers=HEADERS, timeout=12)
+        if resp.status_code == 200:
+            data = resp.json()
+            raw_jobs = data.get("jobs", [])
+            q_terms = [t.strip().lower() for t in search_query.split() if t.strip()]
+            cutoff_time = datetime.now(timezone.utc) - timedelta(hours=posted_within_hours)
+
+            for item in raw_jobs:
+                pub_date = item.get("pubDate")
+                if pub_date:
+                    try:
+                        job_time = datetime.fromisoformat(pub_date.replace("Z", "+00:00"))
+                        if job_time < cutoff_time:
+                            continue
+                    except Exception:
+                        pass
+
+                title = item.get("jobTitle", "AI Engineer")
+                company = item.get("companyName", "AI Startup")
+                description = _clean_html(item.get("jobDescription", ""))
+                url = item.get("url", "")
+                location = item.get("jobGeo", "Remote")
+
+                combined = f"{title} {company} {description}".lower()
+                if not q_terms or any(t in combined for t in q_terms) or "ai" in title.lower() or "intern" in title.lower():
+                    if url and url.startswith("http"):
+                        jobs.append({
+                            "title": title,
+                            "company": company,
+                            "description": description,
+                            "link": url,
+                            "apply_url": url,
+                            "location": location,
+                            "source": "jobicy",
+                            "posted_at": pub_date or ""
+                        })
+                if len(jobs) >= limit:
+                    break
+    except Exception as e:
+        logger.warning(f"Error fetching Jobicy jobs: {e}")
+
+    return jobs[:limit]
+
+
+# ---------------------------------------------------------------------------
+# 6. Adzuna API
+# ---------------------------------------------------------------------------
 def fetch_adzuna_jobs(search_query: str = "software engineer", limit: int = 10, app_id: str = "", api_key: str = "", posted_within_hours: int = 24) -> List[Dict[str, Any]]:
     if requests is None or not app_id or not api_key:
         return []
 
     jobs: List[Dict[str, Any]] = []
-    # max_days filter
     max_days = max(1, posted_within_hours // 24)
     url = f"{ADZUNA_API_URL}/us/search/1"
     
@@ -327,56 +387,84 @@ def fetch_adzuna_jobs(search_query: str = "software engineer", limit: int = 10, 
 
 
 # ---------------------------------------------------------------------------
-# Main entry point
+# Main entry point - Startup prioritized, multi-platform resilient fallback
 # ---------------------------------------------------------------------------
-
-def fetch_jobs(search_query: str = "software engineer", limit: int = 10, posted_within_hours: int = 24, start_offset: int = 0) -> List[Dict[str, Any]]:
+def fetch_jobs(search_query: str = "AI Intern", limit: int = 10, posted_within_hours: int = 24, start_offset: int = 0) -> List[Dict[str, Any]]:
     """
-    Main entry point — combines real jobs from multiple platforms.
-    Priority: JSearch > LinkedIn > Arbeitnow > Remotive > Himalayas > Adzuna > Apollo
+    Main entry point — prioritizes startup job listings and cascades seamlessly across
+    multiple platforms (Jobicy, Himalayas, Arbeitnow, Remotive, LinkedIn, JSearch, Adzuna, Apollo)
+    so the requested number of results is always satisfied without dropping.
     """
     all_jobs: List[Dict[str, Any]] = []
     seen_links = set()
 
     def _add_unique(jobs_list):
         for j in jobs_list:
-            key = j.get("apply_url") or j.get("link")
+            key = (j.get("apply_url") or j.get("link") or "").strip().lower()
             if key and key not in seen_links:
                 seen_links.add(key)
                 all_jobs.append(j)
 
     days_old = max(1, posted_within_hours // 24)
 
-    # 1. JSearch API
-    jsearch_jobs = fetch_jsearch_jobs(search_query, limit=limit, days_old=days_old)
-    _add_unique(jsearch_jobs)
+    # 1. Startup Source: Jobicy (direct remote startup AI listings)
+    jobicy_jobs = fetch_jobicy_jobs(search_query, limit=limit, posted_within_hours=posted_within_hours)
+    _add_unique(jobicy_jobs)
 
-    # 2. LinkedIn Jobs 
+    # 2. Startup Source: Himalayas (startup job board)
     if len(all_jobs) < limit:
-        linkedin_jobs = fetch_linkedin_jobs(
+        himalayas_jobs = fetch_himalayas_jobs(
             search_query,
+            limit=limit - len(all_jobs),
+            posted_within_hours=posted_within_hours
+        )
+        _add_unique(himalayas_jobs)
+
+    # 3. Startup Source: Arbeitnow (European & global tech startups)
+    if len(all_jobs) < limit:
+        arbeitnow_jobs = fetch_arbeitnow_jobs(
+            search_query,
+            limit=limit - len(all_jobs),
+            posted_within_hours=posted_within_hours
+        )
+        _add_unique(arbeitnow_jobs)
+
+    # 4. Startup Source: Remotive (high-growth remote startups)
+    if len(all_jobs) < limit:
+        remotive_jobs = fetch_remotive_jobs(
+            search_query,
+            limit=limit - len(all_jobs),
+            posted_within_hours=posted_within_hours
+        )
+        _add_unique(remotive_jobs)
+
+    # 5. LinkedIn Startup Search (keywords enriched with AI startup intern)
+    if len(all_jobs) < limit:
+        startup_query = f"{search_query} startup"
+        linkedin_jobs = fetch_linkedin_jobs(
+            startup_query,
             limit=limit - len(all_jobs),
             posted_within_hours=posted_within_hours,
             start_offset=start_offset
         )
         _add_unique(linkedin_jobs)
 
-    # 3. Arbeitnow API 
+    # 6. JSearch API (aggregates multiple startup and direct portals)
     if len(all_jobs) < limit:
-        arbeitnow_jobs = fetch_arbeitnow_jobs(search_query, limit=limit - len(all_jobs), posted_within_hours=posted_within_hours)
-        _add_unique(arbeitnow_jobs)
+        jsearch_jobs = fetch_jsearch_jobs(search_query, limit=limit - len(all_jobs), days_old=days_old)
+        _add_unique(jsearch_jobs)
 
-    # 4. Remotive API
+    # 7. LinkedIn General AI Search (if startup query was exhausted)
     if len(all_jobs) < limit:
-        remotive_jobs = fetch_remotive_jobs(search_query, limit=limit - len(all_jobs), posted_within_hours=posted_within_hours)
-        _add_unique(remotive_jobs)
+        linkedin_general = fetch_linkedin_jobs(
+            search_query,
+            limit=limit - len(all_jobs),
+            posted_within_hours=posted_within_hours,
+            start_offset=start_offset
+        )
+        _add_unique(linkedin_general)
 
-    # 5. Himalayas API
-    if len(all_jobs) < limit:
-        himalayas_jobs = fetch_himalayas_jobs(search_query, limit=limit - len(all_jobs), posted_within_hours=posted_within_hours)
-        _add_unique(himalayas_jobs)
-
-    # 6. Adzuna API (optional)
+    # 8. Adzuna API (optional)
     if len(all_jobs) < limit:
         try:
             if settings.adzuna_app_id and settings.adzuna_api_key:
@@ -389,8 +477,8 @@ def fetch_jobs(search_query: str = "software engineer", limit: int = 10, posted_
                 _add_unique(adzuna_jobs)
         except Exception as e:
             logger.warning(f"Adzuna fetch skipped: {e}")
-            
-    # 7. Apollo fallback
+
+    # 9. Apollo fallback
     if len(all_jobs) < limit:
         apollo_jobs = fetch_apollo_jobs(search_query, limit=limit - len(all_jobs))
         _add_unique(apollo_jobs)

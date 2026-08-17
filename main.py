@@ -475,10 +475,10 @@ async def stream_pipeline(
 
             search_queries = get_search_queries_from_resume(resume_path)
             core_ai_queries = [
-                "AI Consultant Intern", "AI Automation Intern", "GenAI Developer Intern",
+                "AI Intern", "AI Automation Intern", "GenAI Developer Intern",
                 "Agentic AI Intern", "LLM Engineer Intern", "AI ML Intern",
-                "AI Python Developer Intern", "Full Stack AI Developer Intern",
-                "AI Data Analyst Intern", "AI Automation Engineer Intern"
+                "Machine Learning Intern", "AI Agent Developer Intern",
+                "AI Automation Engineer Intern", "NLP AI Intern"
             ]
             for q in core_ai_queries:
                 if q not in search_queries:
