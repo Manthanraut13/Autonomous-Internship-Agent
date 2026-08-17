@@ -10,11 +10,11 @@ Includes a secure **React CRM Dashboard** (Warm & Cold theme) deployed on Render
 
 | Feature | Description |
 |---|---|
-| 🔍 **Startup-First Multi-Source Scraping** | Cascades across **LinkedIn Startup**, **Remotive**, **Himalayas**, **Jobicy**, **Arbeitnow**, and **JSearch** to prioritize high-growth startup openings |
+| 🔍 **Top 3 Startup-First Job Sites** | Searches **LinkedIn Startups**, **Remotive Startups**, and **Himalayas Startups** in strict priority order |
 | 🎯 **Strictly AI-Only Roles** | Search queries and scrapers are locked exclusively to AI, GenAI, LLMs, Agentic AI, and AI Automation domains |
 | 🎓 **Internship-First Filtering** | Automatically filters out senior/lead positions (5+ YOE) and scores student/trainee/internship roles with highest priority |
-| 🧠 **AI Resume-JD Matching** | Groq LLM (`llama-3.1-8b-instant`) scores each job 0–100 across 4 dimensions: Tech Stack, Domain Alignment, Seniority Level, and Project Relevance |
-| 🔄 **Immediate Early-Stop Pipeline** | Traverses platforms in strict priority order; the moment 25 qualified matches are found (whether on the 1st platform or 3rd), scraping stops immediately and report is sent |
+| 🧠 **AI Resume-JD Matching** | Groq LLM (`openai/gpt-oss-120b` with multi-model fallback) scores each job 0–100 across 4 dimensions: Tech Stack, Domain Alignment, Seniority Level, and Project Relevance |
+| 🔄 **Immediate Early-Stop Pipeline** | Traverses top 3 platforms in order; the moment 25 qualified matches are found (whether on LinkedIn or Remotive), scraping stops immediately and report is sent |
 | 📧 **Automated Email Reports** | Delivers a structured CSV with direct apply links to your inbox via Gmail OAuth 2.0 API |
 | 📲 **WhatsApp Notifications** | Sends a quick summary alert to your phone via Twilio WhatsApp |
 | ⏰ **Dual Daily Cron Schedule** | Runs automatically at 9:00 AM and 9:00 PM IST via GitHub Actions (100% free) |
@@ -35,12 +35,7 @@ Includes a secure **React CRM Dashboard** (Warm & Cold theme) deployed on Render
   │  │ 3. Priority-Ordered Scraping & Real-Time Scoring:      │  │
   │  │    • Priority 1: LinkedIn Startup AI Internships       │  │
   │  │    • Priority 2: Remotive Startup AI Internships       │  │
-  │  │    • Priority 3: LinkedIn AI Internships (Direct)      │  │
-  │  │    • Priority 4: Himalayas Remote Startups             │  │
-  │  │    • Priority 5: Jobicy AI Startups                    │  │
-  │  │    • Priority 6: Arbeitnow Tech Startups               │  │
-  │  │    • Priority 7: JSearch Multi-Portal Aggregator       │  │
-  │  │    • Priority 8: Adzuna & Apollo Fallbacks             │  │
+  │  │    • Priority 3: Himalayas Remote Startups             │  │
   │  │ 4. Score immediately (Groq LLM 4-dimension rubric)     │  │
   │  │ 5. 🛑 EARLY STOP: Halts instantly at 25 matches        │  │
   │  │ 6. Export CSV → Email via Gmail OAuth                   │  │

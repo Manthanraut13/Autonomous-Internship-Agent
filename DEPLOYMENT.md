@@ -82,7 +82,7 @@ Go to the **Environment** tab of your Web Service and add:
 | `ADMIN_PASSWORD` | `your_secure_password` | Password for dashboard login |
 | `AUTH_SECRET_KEY` | `32_char_random_string_here` | Secret key for signing session tokens |
 | `GROQ_API_KEY` | `gsk_...` | Your Groq LLM API Key |
-| `GROQ_MODEL` | `llama-3.1-8b-instant` | Groq Model for JD evaluation |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq Model for JD evaluation |
 | `RECIPIENT_EMAIL` | `manthanr141@gmail.com` | Email address to receive CSV reports |
 | `TWILIO_ACCOUNT_SID` | `AC...` | Twilio Account SID |
 | `TWILIO_AUTH_TOKEN` | `your_twilio_token` | Twilio Auth Token |

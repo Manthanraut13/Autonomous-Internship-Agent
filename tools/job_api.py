@@ -3,15 +3,10 @@ tools/job_api.py
 ----------------
 Fetches real, live AI internship listings prioritizing high-growth startups.
 
-Sources (priority order):
+Top 3 Sources (priority order):
   1. LinkedIn Startups   - real LinkedIn startup AI internships with direct links
   2. Remotive Startups   - live remote startup tech listings
-  3. LinkedIn Direct     - direct LinkedIn AI internships
-  4. Himalayas Startups  - remote startup job listings
-  5. Jobicy AI Startups  - remote AI startup listings
-  6. Arbeitnow Startups  - European & global startup listings
-  7. JSearch Aggregator  - multi-portal aggregator
-  8. Adzuna / Apollo     - fallbacks if configured
+  3. Himalayas Startups  - remote startup job listings
 
 Returns standardized job dictionaries:
     {
@@ -198,7 +193,8 @@ def fetch_remotive_jobs(search_query: str = "software engineer", limit: int = 10
         if resp.status_code == 200:
             data = resp.json()
             cutoff_time = datetime.now(timezone.utc) - timedelta(hours=posted_within_hours)
-            
+            q_terms = [t.strip().lower() for t in search_query.split() if t.strip()]
+
             for item in data.get("jobs", []):
                 pub_date = item.get("publication_date")
                 if pub_date:
@@ -208,12 +204,17 @@ def fetch_remotive_jobs(search_query: str = "software engineer", limit: int = 10
                             continue
                     except Exception:
                         pass
-                        
+
                 title = item.get("title", "Unknown Title")
                 company = item.get("company_name", "Unknown Company")
                 description = _clean_html(item.get("description", ""))
                 url = item.get("url", "")
                 location = item.get("candidate_required_location", "Remote")
+
+                combined = f"{title} {company} {description}".lower()
+                # Ensure relevance to AI / ML / internship or query terms
+                if q_terms and not any(t in combined for t in q_terms) and not any(k in title.lower() for k in ["ai", "machine learning", "ml", "intern", "data"]):
+                    continue
 
                 if url and url.startswith("http"):
                     jobs.append({
@@ -516,7 +517,7 @@ def fetch_jobs(search_query: str = "AI Intern", limit: int = 10, posted_within_h
 
 
 def get_scraper_platforms() -> List[Dict[str, Any]]:
-    """Returns the ordered list of scrapers in strict priority order."""
+    """Returns the ordered list of scrapers for top 3 priority platforms."""
     return [
         {
             "name": "LinkedIn Startups",
@@ -529,29 +530,9 @@ def get_scraper_platforms() -> List[Dict[str, Any]]:
             "fn": lambda q, lim, hrs, off: fetch_remotive_jobs(q, limit=lim, posted_within_hours=hrs)
         },
         {
-            "name": "LinkedIn AI Internships",
-            "source": "linkedin",
-            "fn": lambda q, lim, hrs, off: fetch_linkedin_jobs(q, limit=lim, posted_within_hours=hrs, start_offset=off)
-        },
-        {
             "name": "Himalayas Startups",
             "source": "himalayas",
             "fn": lambda q, lim, hrs, off: fetch_himalayas_jobs(q, limit=lim, posted_within_hours=hrs)
-        },
-        {
-            "name": "Jobicy AI Startups",
-            "source": "jobicy",
-            "fn": lambda q, lim, hrs, off: fetch_jobicy_jobs(q, limit=lim, posted_within_hours=hrs)
-        },
-        {
-            "name": "Arbeitnow Startups",
-            "source": "arbeitnow",
-            "fn": lambda q, lim, hrs, off: fetch_arbeitnow_jobs(q, limit=lim, posted_within_hours=hrs)
-        },
-        {
-            "name": "JSearch Aggregator",
-            "source": "jsearch",
-            "fn": lambda q, lim, hrs, off: fetch_jsearch_jobs(q, limit=lim, days_old=max(1, hrs // 24))
         }
     ]
 
