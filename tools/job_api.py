@@ -1,16 +1,17 @@
 """
 tools/job_api.py
 ----------------
-Fetches real, live job/internship listings from public APIs and platform endpoints.
+Fetches real, live AI internship listings prioritizing high-growth startups.
 
 Sources (priority order):
-  1. JSearch API      - free, 500 req/month, aggregates LinkedIn, Indeed, Glassdoor
-  2. LinkedIn Jobs    - real, live LinkedIn job listings with direct LinkedIn URLs
-  3. Arbeitnow API    - free, 170+ tech listings, direct Greenhouse/Lever links
-  4. Remotive API     - free, live remote tech job listings
-  5. Himalayas API    - free, remote tech job listings
-  6. Adzuna API       - free tier, 250 req/day (if keys present)
-  7. Apollo API       - fallback if key present
+  1. LinkedIn Startups   - real LinkedIn startup AI internships with direct links
+  2. Remotive Startups   - live remote startup tech listings
+  3. LinkedIn Direct     - direct LinkedIn AI internships
+  4. Himalayas Startups  - remote startup job listings
+  5. Jobicy AI Startups  - remote AI startup listings
+  6. Arbeitnow Startups  - European & global startup listings
+  7. JSearch Aggregator  - multi-portal aggregator
+  8. Adzuna / Apollo     - fallbacks if configured
 
 Returns standardized job dictionaries:
     {
