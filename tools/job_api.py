@@ -513,3 +513,44 @@ def fetch_jobs(search_query: str = "AI Intern", limit: int = 10, posted_within_h
 
     return all_jobs[:limit]
 
+
+def get_scraper_platforms() -> List[Dict[str, Any]]:
+    """Returns the ordered list of scrapers in strict priority order."""
+    return [
+        {
+            "name": "LinkedIn Startups",
+            "source": "linkedin",
+            "fn": lambda q, lim, hrs, off: fetch_linkedin_jobs(f"{q} startup", limit=lim, posted_within_hours=hrs, start_offset=off)
+        },
+        {
+            "name": "Remotive Startups",
+            "source": "remotive",
+            "fn": lambda q, lim, hrs, off: fetch_remotive_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "LinkedIn AI Internships",
+            "source": "linkedin",
+            "fn": lambda q, lim, hrs, off: fetch_linkedin_jobs(q, limit=lim, posted_within_hours=hrs, start_offset=off)
+        },
+        {
+            "name": "Himalayas Startups",
+            "source": "himalayas",
+            "fn": lambda q, lim, hrs, off: fetch_himalayas_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "Jobicy AI Startups",
+            "source": "jobicy",
+            "fn": lambda q, lim, hrs, off: fetch_jobicy_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "Arbeitnow Startups",
+            "source": "arbeitnow",
+            "fn": lambda q, lim, hrs, off: fetch_arbeitnow_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "JSearch Aggregator",
+            "source": "jsearch",
+            "fn": lambda q, lim, hrs, off: fetch_jsearch_jobs(q, limit=lim, days_old=max(1, hrs // 24))
+        }
+    ]
+

@@ -167,8 +167,11 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
     db_links, db_apply_urls, db_title_company = get_existing_db_signatures()
     print(f"   Known DB listings to deduplicate against: {len(db_links)} records")
 
-    # ── Multi-wave Scraping & Scoring Loop ─────────────────────────────
-    print(f"\n🔍 Searching for unique postings (past 24 hours, Target = {target_matches} matches)...")
+    # ── Platform-by-Platform Priority Scraping & Immediate Evaluation ──
+    print(f"\n🔍 Searching for unique AI internship postings (past 24 hours, Target = {target_matches} matches)...")
+    print(f"   Priority Sequence: 1. LinkedIn Startups → 2. Remotive → 3. LinkedIn Direct → 4. Himalayas → 5. Jobicy → 6. Arbeitnow → 7. JSearch")
+    print(f"   🛑 Stop Condition: Search stops immediately as soon as {target_matches} qualified matches are found.\n")
+
     scored_jobs: List[Dict[str, Any]] = []
     seen_in_run_links: Set[str] = set()
     seen_in_run_signatures: Set[Tuple[str, str]] = set()
@@ -176,26 +179,39 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
     total_scraped_count = 0
     duplicate_skipped_count = 0
 
-    for wave in range(1, max_waves + 1):
+    from tools.job_api import get_scraper_platforms
+    platforms = get_scraper_platforms()
+
+    for p_idx, platform in enumerate(platforms, 1):
         if len(scored_jobs) >= target_matches:
             break
 
-        start_offset = (wave - 1) * 20
-        print(f"\n{'━' * 60}")
-        print(f"🌊 Wave {wave}/{max_waves} (Offset: {start_offset}) — Target remaining: {target_matches - len(scored_jobs)}")
-        print(f"{'━' * 60}")
+        plat_name = platform["name"]
+        plat_fn = platform["fn"]
 
-        wave_jobs: List[Dict[str, Any]] = []
+        print(f"\n{'━' * 65}")
+        print(f"🚀 [Priority {p_idx}/{len(platforms)}] Platform: {plat_name}")
+        print(f"   Target remaining: {target_matches - len(scored_jobs)} matches")
+        print(f"{'━' * 65}")
 
         for query in search_queries:
             if len(scored_jobs) >= target_matches:
                 break
 
-            print(f"   ➤ Query: \"{query}\" (limit=10, 24h)")
-            raw_jobs = fetch_jobs(query, limit=10, posted_within_hours=24, start_offset=start_offset)
+            print(f"\n   ➤ [{plat_name}] Query: \"{query}\" (limit=10, 24h)")
+            try:
+                raw_jobs = plat_fn(query, 10, 24, 0)
+            except Exception as e:
+                print(f"   ⚠️ Scraper error on {plat_name}: {e}")
+                continue
+
             total_scraped_count += len(raw_jobs)
+            fresh_jobs_for_query = 0
 
             for j in raw_jobs:
+                if len(scored_jobs) >= target_matches:
+                    break
+
                 link = (j.get("link") or "").strip().lower()
                 apply_url = (j.get("apply_url") or "").strip().lower()
                 title = (j.get("title") or "").strip().lower()
@@ -218,48 +234,40 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
                 if title and company:
                     seen_in_run_signatures.add(sig)
 
-                wave_jobs.append(j)
+                desc = j.get("description", "")
+                if not desc or len(desc.strip()) < 30:
+                    continue
 
-        print(f"\n   Wave {wave} yielded {len(wave_jobs)} fresh unique postings to evaluate.")
+                fresh_jobs_for_query += 1
 
-        # Score wave jobs with Groq LLM
-        for i, job in enumerate(wave_jobs, 1):
-            if len(scored_jobs) >= target_matches:
-                print(f"   🎯 Reached target of {target_matches} unique qualified matches! Proceeding to delivery.")
-                break
+                # Evaluate immediately with Groq LLM
+                print(f"      🔄 Scoring: {j['title']} @ {j['company']}…", end="", flush=True)
 
-            title = job["title"]
-            company = job["company"]
-            desc = job.get("description", "")
+                try:
+                    result = match_resume_to_job(resume_text, desc)
+                    score = result.get("score", 0)
+                    reasoning = result.get("reasoning", "")
+                    key_matches = result.get("key_matches", [])
+                except Exception as e:
+                    print(f" ❌ Error: {e}")
+                    continue
 
-            if not desc or len(desc.strip()) < 30:
-                print(f"   [{i}/{len(wave_jobs)}] ⏭  {title} @ {company} — skipped (no description)")
-                continue
+                j["match_score"] = score
+                j["match_reasoning"] = reasoning
+                j["key_matches"] = key_matches
 
-            print(f"   [{i}/{len(wave_jobs)}] 🔄 Scoring: {title} @ {company}…", end="", flush=True)
+                emoji = "✅" if score >= threshold else "⬇️"
+                print(f" {emoji} Score: {score}/100")
 
-            try:
-                result = match_resume_to_job(resume_text, desc)
-                score = result.get("score", 0)
-                reasoning = result.get("reasoning", "")
-                key_matches = result.get("key_matches", [])
-            except Exception as e:
-                print(f" ❌ Error: {e}")
-                continue
+                if score >= threshold:
+                    scored_jobs.append(j)
+                    print(f"         🎯 [Found {len(scored_jobs)}/{target_matches} matches!]")
+                    if len(scored_jobs) >= target_matches:
+                        print(f"\n🎉 Reached exact target of {target_matches} qualified AI internship openings on {plat_name}!")
+                        print(f"🛑 Halting search immediately — skipping all remaining platforms.")
+                        break
 
-            job["match_score"] = score
-            job["match_reasoning"] = reasoning
-            job["key_matches"] = key_matches
-
-            emoji = "✅" if score >= threshold else "⬇️"
-            print(f" {emoji} Score: {score}/100")
-
-            if score >= threshold:
-                scored_jobs.append(job)
-                print(f"      [Progress: {len(scored_jobs)}/{target_matches} matches]")
-
-            # 3-second delay between LLM evaluations to prevent rate-limit bursts
-            time.sleep(3)
+                time.sleep(2)
 
     # ── Summary of Qualified Matches ──────────────────────────────────────
     print(f"\n{'─' * 65}")

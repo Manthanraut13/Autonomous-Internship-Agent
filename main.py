@@ -493,27 +493,27 @@ async def stream_pipeline(
                 db_apply_urls = set(r[0].strip().lower() for r in db.query(Job.apply_url).all() if r[0])
                 db_signatures = set((r[0].strip().lower(), r[1].strip().lower()) for r in db.query(Job.title, Job.company).all() if r[0] and r[1])
 
-            yield evt("queries", f"Loaded {len(db_links)} database records to enforce cross-run deduplication.")
-            await asyncio.sleep(0.1)
-
-            # ── Step 4: Multi-Wave Scraping & Scoring Loop ───────────────
-            from tools.job_api import fetch_jobs
+            # ── Step 4: Platform Priority Scraping & Immediate Evaluation ─
+            from tools.job_api import get_scraper_platforms
             from tools.jd_matcher import match_resume_to_job
 
             seen_in_run_links: Set[str] = set()
             seen_in_run_signatures: Set[Tuple[str, str]] = set()
-            max_waves = 4
             total_scraped_count = 0
+            platforms = get_scraper_platforms()
 
-            for wave in range(1, max_waves + 1):
+            yield evt("scraping", f"Starting priority search (Target: {target} qualified AI internship openings)...")
+            await asyncio.sleep(0.1)
+
+            for p_idx, platform in enumerate(platforms, 1):
                 if len(scored_jobs) >= target:
                     break
 
-                start_offset = (wave - 1) * 20
-                yield evt("scraping", f"🌊 Wave {wave}/{max_waves} (Offset: {start_offset}) — Target remaining: {target - len(scored_jobs)} matches...")
-                await asyncio.sleep(0.1)
+                plat_name = platform["name"]
+                plat_fn = platform["fn"]
 
-                wave_jobs: List[Dict[str, Any]] = []
+                yield evt("scraping", f"🚀 [Priority {p_idx}/{len(platforms)}] Searching {plat_name} (Remaining: {target - len(scored_jobs)} matches)...")
+                await asyncio.sleep(0.1)
 
                 for query in search_queries:
                     if await request.is_disconnected():
@@ -521,11 +521,21 @@ async def stream_pipeline(
                     if len(scored_jobs) >= target:
                         break
 
-                    yield evt("scraping", f"Fetching: \"{query}\" (limit=10, 24h)...")
-                    raw_jobs = await asyncio.to_thread(fetch_jobs, query, 10, 24, start_offset)
+                    yield evt("scraping", f"[{plat_name}] Fetching: \"{query}\" (24h)...")
+                    try:
+                        raw_jobs = await asyncio.to_thread(plat_fn, query, 10, 24, 0)
+                    except Exception as e:
+                        yield evt("scraping", f"⚠️ Scraper warning on {plat_name}: {e}")
+                        continue
+
                     total_scraped_count += len(raw_jobs)
 
                     for j in raw_jobs:
+                        if await request.is_disconnected():
+                            return
+                        if len(scored_jobs) >= target:
+                            break
+
                         link = (j.get("link") or "").strip().lower()
                         apply_url = (j.get("apply_url") or "").strip().lower()
                         title = (j.get("title") or "").strip().lower()
@@ -542,51 +552,39 @@ async def stream_pipeline(
                         if link: seen_in_run_links.add(link)
                         if apply_url: seen_in_run_links.add(apply_url)
                         if title and company: seen_in_run_signatures.add(sig)
-                        wave_jobs.append(j)
+
+                        desc = j.get("description", "")
+                        if not desc or len(desc.strip()) < 30:
+                            continue
+
+                        yield evt("matching", f"[{len(scored_jobs)}/{target} Found] 🔄 Scoring: {j['title']} @ {j['company']}...")
+
+                        try:
+                            result = await asyncio.to_thread(match_resume_to_job, resume_text, desc)
+                            score = result.get("score", 0)
+                            reasoning = result.get("reasoning", "")
+                            key_matches = result.get("key_matches", [])
+                        except Exception as e:
+                            yield evt("matching", f"❌ Error scoring {j['title']}: {e}")
+                            continue
+
+                        j["match_score"] = score
+                        j["match_reasoning"] = reasoning
+                        j["key_matches"] = key_matches
+
+                        emoji = "✅" if score >= threshold else "⬇️"
+                        yield evt("matching", f"[{len(scored_jobs)+1}/{target}] {emoji} {j['title']} @ {j['company']} → {score}/100",
+                                  {"title": j["title"], "company": j["company"], "score": score})
+
+                        if score >= threshold:
+                            scored_jobs.append(j)
+                            if len(scored_jobs) >= target:
+                                yield evt("matching", f"🎉 Reached exact target of {target} qualified AI internship openings on {plat_name}! Halting search.")
+                                break
+
+                        await asyncio.sleep(1.5)
 
                     await asyncio.sleep(0.05)
-
-                yield evt("scraping", f"Wave {wave} yielded {len(wave_jobs)} fresh unique postings to evaluate.")
-                await asyncio.sleep(0.1)
-
-                # Score wave candidates
-                for i, job in enumerate(wave_jobs, 1):
-                    if await request.is_disconnected():
-                        return
-                    if len(scored_jobs) >= target:
-                        break
-
-                    title = job["title"]
-                    company = job["company"]
-                    desc = job.get("description", "")
-
-                    if not desc or len(desc.strip()) < 30:
-                        yield evt("matching", f"[{i}/{len(wave_jobs)}] ⏭ Skipped: {title} @ {company} (no description)")
-                        continue
-
-                    yield evt("matching", f"[{len(scored_jobs)}/{target} Matches] 🔄 Scoring: {title} @ {company}...")
-
-                    try:
-                        result = await asyncio.to_thread(match_resume_to_job, resume_text, desc)
-                        score = result.get("score", 0)
-                        reasoning = result.get("reasoning", "")
-                        key_matches = result.get("key_matches", [])
-                    except Exception as e:
-                        yield evt("matching", f"[{i}/{len(wave_jobs)}] ❌ Error scoring {title}: {e}")
-                        continue
-
-                    job["match_score"] = score
-                    job["match_reasoning"] = reasoning
-                    job["key_matches"] = key_matches
-
-                    emoji = "✅" if score >= threshold else "⬇️"
-                    yield evt("matching", f"[{len(scored_jobs)+1}/{target}] {emoji} {title} @ {company} → {score}/100",
-                              {"title": title, "company": company, "score": score})
-
-                    if score >= threshold:
-                        scored_jobs.append(job)
-
-                    await asyncio.sleep(3)
 
             # Sort and slice top target matches
             scored_jobs.sort(key=lambda x: x.get("match_score", 0), reverse=True)
