@@ -14,7 +14,7 @@ Includes a secure **React CRM Dashboard** (Warm & Cold theme) deployed on Render
 | 🎯 **Strictly AI-Only Roles** | Search queries and scrapers are locked exclusively to AI, GenAI, LLMs, Agentic AI, and AI Automation domains |
 | 🎓 **Internship-First Filtering** | Automatically filters out senior/lead positions (5+ YOE) and scores student/trainee/internship roles with highest priority |
 | 🧠 **AI Resume-JD Matching** | Groq LLM (`llama-3.1-8b-instant`) scores each job 0–100 across 4 dimensions: Tech Stack, Domain Alignment, Seniority Level, and Project Relevance |
-| 🔄 **Iterative Deduplication Loop** | Loops through multiple scraping waves until exactly 25 unique, qualified AI listings are found — with strict cross-run database deduplication |
+| 🔄 **Immediate Early-Stop Pipeline** | Traverses platforms in strict priority order; the moment 25 qualified matches are found (whether on the 1st platform or 3rd), scraping stops immediately and report is sent |
 | 📧 **Automated Email Reports** | Delivers a structured CSV with direct apply links to your inbox via Gmail OAuth 2.0 API |
 | 📲 **WhatsApp Notifications** | Sends a quick summary alert to your phone via Twilio WhatsApp |
 | ⏰ **Dual Daily Cron Schedule** | Runs automatically at 9:00 AM and 9:00 PM IST via GitHub Actions (100% free) |
@@ -32,7 +32,7 @@ Includes a secure **React CRM Dashboard** (Warm & Cold theme) deployed on Render
   │  ┌────────────────────────────────────────────────────────┐  │
   │  │ 1. Parse Resume PDF                                    │  │
   │  │ 2. Generate Strictly AI-Only Search Queries            │  │
-  │  │ 3. Priority Scraping:                                  │  │
+  │  │ 3. Priority-Ordered Scraping & Real-Time Scoring:      │  │
   │  │    • Priority 1: LinkedIn Startup AI Internships       │  │
   │  │    • Priority 2: Remotive Startup AI Internships       │  │
   │  │    • Priority 3: LinkedIn AI Internships (Direct)      │  │
@@ -41,11 +41,10 @@ Includes a secure **React CRM Dashboard** (Warm & Cold theme) deployed on Render
   │  │    • Priority 6: Arbeitnow Tech Startups               │  │
   │  │    • Priority 7: JSearch Multi-Portal Aggregator       │  │
   │  │    • Priority 8: Adzuna & Apollo Fallbacks             │  │
-  │  │ 4. Deduplicate against DB (cross-run)                  │  │
-  │  │ 5. Score with Groq LLM (4-dimension rubric)            │  │
-  │  │ 6. Loop until 25 unique matches found                  │  │
-  │  │ 7. Export CSV → Email via Gmail OAuth                   │  │
-  │  │ 8. Send WhatsApp summary via Twilio                    │  │
+  │  │ 4. Score immediately (Groq LLM 4-dimension rubric)     │  │
+  │  │ 5. 🛑 EARLY STOP: Halts instantly at 25 matches        │  │
+  │  │ 6. Export CSV → Email via Gmail OAuth                   │  │
+  │  │ 7. Send WhatsApp summary via Twilio                    │  │
   │  └────────────────────┬───────────────────────────────────┘  │
   └───────────────────────┼──────────────────────────────────────┘
                           │  Writes 25 new job records
