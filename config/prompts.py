@@ -29,16 +29,17 @@ Evaluate the candidate across four distinct components and sum the points:
    - Mismatched tech stack (e.g., Job requires Swift, Java, C#, PHP, or Salesforce when resume is Python/AI) = 0–15 pts.
 
 2. **Domain & Role Alignment (0 – 30 points)**:
-   - Does the role match the candidate's target career focus (AI/GenAI Developer, AI Automation, Agentic AI, Python Developer)?
-   - Strong role match (AI Engineer, LLM Automation, Python Backend Intern) = 25–30 pts.
-   - Adjacent role (General Software Engineer, Data Analyst) = 15–24 pts.
+   - Does the role match the candidate's target career focus (AI/GenAI Intern, AI Automation, Agentic AI, LLM Intern)?
+   - Strong role match (AI Intern, GenAI Developer Intern, LLM Automation Intern) = 25–30 pts.
+   - Adjacent role (General Python Backend Intern, Machine Learning Intern) = 18–24 pts.
    - Unrelated role (Sales, DevOps, Mobile Native, Hardware, QA manual, UI Design) = 0–10 pts.
 
-3. **Seniority & Experience Level Fit (0 – 20 points)**:
-   - Is this an Internship, Student, Co-op, or Entry-Level opportunity suited for a student/recent grad?
-   - Student / Intern / Junior = 18–20 pts.
-   - Mid-level (requires 2-3 years full-time experience) = 8–14 pts.
-   - Senior / Staff / Lead (requires 5+ years) = 0–5 pts.
+3. **Seniority & Internship Fit (0 – 20 points)**:
+   - **CRITICAL**: The candidate is specifically seeking **INTERNSHIP & EARLY-CAREER** positions.
+   - Internship / Student / Co-op / Trainee / Graduate Intern = 18–20 pts.
+   - Entry-level / Junior (0–1 years required) = 12–15 pts.
+   - Mid-level (2–3 years full-time experience required) = 4–8 pts.
+   - Senior / Lead / Staff / Principal (requires 4+ years) = 0 pts (and cap total overall score below 45).
 
 4. **Relevant Projects & Concrete Evidence (0 – 10 points)**:
    - Does the resume showcase specific projects or implementations directly proving they can do what the job description asks?
@@ -47,13 +48,13 @@ Evaluate the candidate across four distinct components and sum the points:
    - No relevant projects = 0–2 pts.
 
 ## Score Guidelines
-- **90–100**: Exceptional direct fit — candidate meets all primary criteria with proven AI/Python projects.
-- **75–89**: Strong fit — candidate meets core requirements with high domain overlap.
+- **90–100**: Exceptional direct fit — AI/GenAI internship matching the candidate's skills and projects.
+- **75–89**: Strong fit — relevant AI internship or junior entry role with high domain overlap.
 - **55–74**: Moderate fit — candidate has transferable technical skills but gaps in specific tools/experience.
-- **30–54**: Weak fit — significant gaps in required tech stack or experience level.
-- **0–29**: Poor fit — completely different field, domain, or technology stack.
+- **30–54**: Weak fit — experienced full-time role requiring years of experience, or significant tech stack gaps.
+- **0–29**: Poor fit — completely different field, domain, or senior management role.
 
-DO NOT score every job the same (e.g., 85). Be discriminating and evaluate the genuine variance between job requirements and the candidate's actual qualifications.
+DO NOT score every job the same (e.g., 85). Be discriminating, prioritize startup internships, and penalize experienced full-time roles.
 """
 
 
