@@ -2,7 +2,7 @@
 
 An AI-powered autonomous agent that scrapes real-time AI/ML internship openings from multiple job platforms, scores each listing against your resume using Groq LLM, delivers a curated CSV report to your email, sends a WhatsApp summary to your phone — and runs fully automated twice a day at **9:00 AM** and **9:00 PM IST** via GitHub Actions.
 
-Includes a secure **React CRM Dashboard** deployed on Render for tracking applications, managing job statuses (Applied / Not Applied / Inbox), and triggering live pipeline runs from any browser.
+Includes a secure **React CRM Dashboard** (Warm & Cold theme) deployed on Render for tracking applications, managing job statuses (Applied / Not Applied / Inbox), and triggering live pipeline runs from any browser.
 
 ---
 
@@ -10,13 +10,15 @@ Includes a secure **React CRM Dashboard** deployed on Render for tracking applic
 
 | Feature | Description |
 |---|---|
-| 🔍 **Multi-Source Job Scraping** | Fetches live listings from Remotive, Arbeitnow, Himalayas, LinkedIn (via scraping), and JSearch APIs |
+| 🔍 **Startup-First Multi-Source Scraping** | Cascades across **LinkedIn Startup**, **Remotive**, **Himalayas**, **Jobicy**, **Arbeitnow**, and **JSearch** to prioritize high-growth startup openings |
+| 🎯 **Strictly AI-Only Roles** | Search queries and scrapers are locked exclusively to AI, GenAI, LLMs, Agentic AI, and AI Automation domains |
+| 🎓 **Internship-First Filtering** | Automatically filters out senior/lead positions (5+ YOE) and scores student/trainee/internship roles with highest priority |
 | 🧠 **AI Resume-JD Matching** | Groq LLM (`llama-3.1-8b-instant`) scores each job 0–100 across 4 dimensions: Tech Stack, Domain Alignment, Seniority Level, and Project Relevance |
 | 🔄 **Iterative Deduplication Loop** | Loops through multiple scraping waves until exactly 25 unique, qualified AI listings are found — with strict cross-run database deduplication |
 | 📧 **Automated Email Reports** | Delivers a structured CSV with direct apply links to your inbox via Gmail OAuth 2.0 API |
 | 📲 **WhatsApp Notifications** | Sends a quick summary alert to your phone via Twilio WhatsApp |
 | ⏰ **Dual Daily Cron Schedule** | Runs automatically at 9:00 AM and 9:00 PM IST via GitHub Actions (100% free) |
-| 🖥️ **Secure CRM Dashboard** | React-based dark-mode UI with admin login, job tracking (Inbox → Applied → Not Applied), delete, and live terminal streaming |
+| 🎨 **Warm & Cold UI Dashboard** | React dark-mode UI with warm amber accents, cold frost teal/emerald indicators, admin login, CRM status tracking, and live terminal streaming |
 | 🔒 **Backend Authentication** | HMAC-SHA256 signed tokens protect all API endpoints; constant-time password comparison prevents timing attacks |
 | 💾 **PostgreSQL + SQLite Fallback** | Shared cloud PostgreSQL for production; automatic SQLite fallback for local development |
 
@@ -29,8 +31,16 @@ Includes a secure **React CRM Dashboard** deployed on Render for tracking applic
   │              GitHub Actions (9:00 AM & 9:00 PM IST)          │
   │  ┌────────────────────────────────────────────────────────┐  │
   │  │ 1. Parse Resume PDF                                    │  │
-  │  │ 2. Generate 10 AI Search Queries                       │  │
-  │  │ 3. Scrape Remotive, Arbeitnow, Himalayas, LinkedIn     │  │
+  │  │ 2. Generate Strictly AI-Only Search Queries            │  │
+  │  │ 3. Priority Scraping:                                  │  │
+  │  │    • Priority 1: LinkedIn Startup AI Internships       │  │
+  │  │    • Priority 2: Remotive Startup AI Internships       │  │
+  │  │    • Priority 3: LinkedIn AI Internships (Direct)      │  │
+  │  │    • Priority 4: Himalayas Remote Startups             │  │
+  │  │    • Priority 5: Jobicy AI Startups                    │  │
+  │  │    • Priority 6: Arbeitnow Tech Startups               │  │
+  │  │    • Priority 7: JSearch Multi-Portal Aggregator       │  │
+  │  │    • Priority 8: Adzuna & Apollo Fallbacks             │  │
   │  │ 4. Deduplicate against DB (cross-run)                  │  │
   │  │ 5. Score with Groq LLM (4-dimension rubric)            │  │
   │  │ 6. Loop until 25 unique matches found                  │  │
@@ -50,7 +60,7 @@ Includes a secure **React CRM Dashboard** deployed on Render for tracking applic
   │              Render Web Service (Free Tier)                  │
   │  ┌────────────────────────────────────────────────────────┐  │
   │  │  FastAPI Backend (Secure Auth + REST API + SSE)        │  │
-  │  │  React CRM Dashboard (Login, CRM Table, Live Terminal) │  │
+  │  │  React CRM Dashboard (Warm & Cold Theme, Live Terminal)│  │
   │  └────────────────────────────────────────────────────────┘  │
   └──────────────────────────────────────────────────────────────┘
 ```
@@ -64,7 +74,7 @@ Includes a secure **React CRM Dashboard** deployed on Render for tracking applic
 | **Backend** | Python 3.11, FastAPI, Uvicorn, SQLAlchemy |
 | **AI / LLM** | Groq API (`llama-3.1-8b-instant`), LangChain |
 | **Database** | PostgreSQL (production), SQLite (local fallback) |
-| **Frontend** | React 18, TypeScript, Vite |
+| **Frontend** | React 18, TypeScript, Vite, Warm & Cold Design System |
 | **Scheduling** | GitHub Actions Cron, APScheduler (in-process) |
 | **Email** | Gmail OAuth 2.0 API (CSV attachments) |
 | **Messaging** | Twilio WhatsApp REST API |
@@ -91,19 +101,19 @@ Autonomous-Internship-Agent/
 ├── frontend/
 │   ├── src/
 │   │   ├── App.tsx              # React CRM Dashboard (Login, CRM, Pipeline, Settings)
-│   │   ├── App.css              # Dark-mode design system
+│   │   ├── App.css              # Warm & Cold dark-mode design system
 │   │   └── main.tsx             # React entry point
 │   ├── dist/                    # Production build (served by FastAPI)
 │   ├── package.json
 │   └── vite.config.ts           # Vite config with /api proxy
 ├── tools/
-│   ├── job_api.py               # Multi-source job fetcher (Remotive, Arbeitnow, Himalayas, LinkedIn)
+│   ├── job_api.py               # Multi-source scraper (LinkedIn, Remotive, Himalayas, Jobicy, etc.)
 │   ├── jd_matcher.py            # Groq LLM resume-JD scorer with rate-limit pacing
-│   ├── resume_parser.py         # PDF text extractor & AI query generator
+│   ├── resume_parser.py         # PDF text extractor & strictly AI query generator
 │   ├── csv_exporter.py          # Structured CSV report generator
 │   ├── email_sender.py          # Gmail OAuth 2.0 CSV email sender
 │   ├── whatsapp_handler.py      # Twilio WhatsApp summary dispatcher
-│   ├── apollo_scraper.py        # Apollo.io fallback scraper
+│   ├── apollo_scraper.py        # Apollo.io & JSearch scraper
 │   └── __init__.py
 ├── main.py                      # FastAPI server: Auth, CRM APIs, SSE streaming, APScheduler
 ├── run_pipeline.py              # CLI pipeline runner (--target 25 --threshold 70)
@@ -233,32 +243,32 @@ View active cron schedules, AI model configuration, notification targets, and ca
 
 ---
 
-## 🔍 AI Search Queries
+## 🔍 Strictly AI-Only Search Queries
 
-The agent generates targeted search queries focused on AI/ML internship roles:
+The agent generates targeted search queries focused exclusively on AI/ML roles:
 
-- AI Consultant Intern
+- AI Intern
 - AI Automation Intern
 - GenAI Developer Intern
 - Agentic AI Intern
 - LLM Engineer Intern
+- AI Agent Developer Intern
 - AI ML Intern
-- AI Python Developer Intern
-- Full Stack AI Developer Intern
-- AI Data Analyst Intern
+- Machine Learning Intern
 - AI Automation Engineer Intern
+- NLP AI Intern
 
 ---
 
-## 📊 Scoring Rubric
+## 📊 Scoring Rubric (Internship-Focused)
 
 Each job is evaluated by the Groq LLM across 4 weighted dimensions:
 
 | Dimension | Weight | What It Measures |
 |---|---|---|
-| Tech Stack Alignment | 40% | Python, LangChain, FastAPI, ML frameworks, etc. |
+| Tech Stack Alignment | 40% | Python, LangChain, FastAPI, ML frameworks, LLMs, agents |
 | Domain Alignment | 30% | AI, GenAI, Automation, LLM, Agentic workflows |
-| Seniority Match | 20% | Intern/Junior/Entry-level vs Senior/Lead |
+| Seniority & Internship Fit | 20% | **Internship/Trainee = 18–20 pts**; Entry-level = 12–15 pts; Senior/Lead (5+ YOE) = 0 pts |
 | Project Relevance | 10% | Similarity to candidate's portfolio projects |
 
 Scores range from **0** (completely irrelevant) to **100** (perfect match). Only listings scoring above the configured threshold (default: 70) are included in reports.
