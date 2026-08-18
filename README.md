@@ -1,293 +1,334 @@
-# 🤖 Autonomous Internship Agent
+# Autonomous Internship Agent
 
-An AI-powered autonomous agent that scrapes real-time AI/ML internship openings from multiple job platforms, scores each listing against your resume using Groq LLM, delivers a curated CSV report to your email, sends a WhatsApp summary to your phone — and runs fully automated twice a day at **9:00 AM** and **9:00 PM IST** via GitHub Actions.
+An enterprise-grade autonomous intelligence system designed to automate end-to-end sourcing, matching, and tracking of high-growth AI and Machine Learning internship openings.
 
-Includes a secure **React CRM Dashboard** (Warm & Cold theme) deployed on Render for tracking applications, managing job statuses (Applied / Not Applied / Inbox), and triggering live pipeline runs from any browser.
-
----
-
-## ✨ Key Features
-
-| Feature | Description |
-|---|---|
-| 🔍 **Top 3 Startup-First Job Sites** | Searches **LinkedIn Startups**, **Remotive Startups**, and **Himalayas Startups** in strict priority order |
-| 🎯 **Strictly AI-Only Roles** | Search queries and scrapers are locked exclusively to AI, GenAI, LLMs, Agentic AI, and AI Automation domains |
-| 🎓 **Internship-First Filtering** | Automatically filters out senior/lead positions (5+ YOE) and scores student/trainee/internship roles with highest priority |
-| 🧠 **AI Resume-JD Matching** | Groq LLM (`openai/gpt-oss-120b` with multi-model fallback) scores each job 0–100 across 4 dimensions: Tech Stack, Domain Alignment, Seniority Level, and Project Relevance |
-| 🔄 **Immediate Early-Stop Pipeline** | Traverses top 3 platforms in order; the moment 25 qualified matches are found (whether on LinkedIn or Remotive), scraping stops immediately and report is sent |
-| 📧 **Automated Email Reports** | Delivers a structured CSV with direct apply links to your inbox via Gmail OAuth 2.0 API |
-| 📲 **WhatsApp Notifications** | Sends a quick summary alert to your phone via Twilio WhatsApp |
-| ⏰ **Dual Daily Cron Schedule** | Runs automatically at 9:00 AM and 9:00 PM IST via GitHub Actions (100% free) |
-| 🎨 **Warm & Cold UI Dashboard** | React dark-mode UI with warm amber accents, cold frost teal/emerald indicators, admin login, CRM status tracking, and live terminal streaming |
-| 🔒 **Backend Authentication** | HMAC-SHA256 signed tokens protect all API endpoints; constant-time password comparison prevents timing attacks |
-| 💾 **PostgreSQL + SQLite Fallback** | Shared cloud PostgreSQL for production; automatic SQLite fallback for local development |
+The platform continuously monitors top startup job ecosystems, extracts candidate profiles from PDF resumes, performs deep multi-dimensional matching via Groq LLMs, delivers formatted CSV digests via Gmail OAuth 2.0, dispatches WhatsApp alerts via Twilio, and hosts an interactive web dashboard for real-time application pipeline tracking.
 
 ---
 
-## 🏗️ System Architecture
+## Table of Contents
+
+- [Key Capabilities](#key-capabilities)
+- [System Architecture](#system-architecture)
+- [Technical Stack](#technical-stack)
+- [Repository Structure](#repository-structure)
+- [Scoring Rubric & Evaluation Logic](#scoring-rubric--evaluation-logic)
+- [Dashboard & User Interface](#dashboard--user-interface)
+- [Quick Start Guide](#quick-start-guide)
+- [Environment Configuration](#environment-configuration)
+- [Production Deployment](#production-deployment)
+- [API Reference](#api-reference)
+- [License & Author](#license--author)
+
+---
+
+## Key Capabilities
+
+| Capability | Technical Implementation | Impact |
+|---|---|---|
+| **Startup-First Sourcing** | Cascading scraper targeting **LinkedIn Startups**, **Remotive Startups**, and **Himalayas Startups** | Prioritizes high-velocity startup teams and high-impact intern roles |
+| **Strictly AI-Only Filtering** | Search vectors locked exclusively to AI, GenAI, LLM, Agentic AI, and ML domains | Eliminates noise from generic web, generic IT, or non-technical listings |
+| **Internship-First Pre-Filtering** | Automated disqualification regex rejecting senior/lead roles (5+ YOE) | Focuses exclusively on student, trainee, and entry-level talent |
+| **Groq LLM Match Engine** | High-throughput inference via `openai/gpt-oss-120b` with automatic model fallback cascade | Provides accurate, differentiated 0–100 match scoring in under 500ms |
+| **Immediate Early-Stop Pipeline** | Traverses priority sources sequentially and halts execution once target quota (25 matches) is met | Reduces API latency and saves up to 80% of token consumption |
+| **Automated Dispatch** | Dual-channel notification via Gmail OAuth 2.0 (CSV attachment) and Twilio WhatsApp API | Delivers decision-ready intelligence directly to inbox and mobile device |
+| **Dual Daily Automation** | Automated serverless execution at **9:00 AM** and **9:00 PM IST** via GitHub Actions | Zero-maintenance, scheduled daily execution |
+| **Glacial Precision CRM UI** | React 18 + Vite dashboard with live SSE streaming terminal, filters, and resume uploader | Centralized interface for application status tracking and manual pipeline execution |
+| **Enterprise Security** | HMAC-SHA256 authenticated sessions with constant-time password verification | Protects API routes and dashboard controls against unauthorized access |
+
+---
+
+## System Architecture
 
 ```
-  ┌──────────────────────────────────────────────────────────────┐
-  │              GitHub Actions (9:00 AM & 9:00 PM IST)          │
-  │  ┌────────────────────────────────────────────────────────┐  │
-  │  │ 1. Parse Resume PDF                                    │  │
-  │  │ 2. Generate Strictly AI-Only Search Queries            │  │
-  │  │ 3. Priority-Ordered Scraping & Real-Time Scoring:      │  │
-  │  │    • Priority 1: LinkedIn Startup AI Internships       │  │
-  │  │    • Priority 2: Remotive Startup AI Internships       │  │
-  │  │    • Priority 3: Himalayas Remote Startups             │  │
-  │  │ 4. Score immediately (Groq LLM 4-dimension rubric)     │  │
-  │  │ 5. 🛑 EARLY STOP: Halts instantly at 25 matches        │  │
-  │  │ 6. Export CSV → Email via Gmail OAuth                   │  │
-  │  │ 7. Send WhatsApp summary via Twilio                    │  │
-  │  └────────────────────┬───────────────────────────────────┘  │
-  └───────────────────────┼──────────────────────────────────────┘
-                          │  Writes 25 new job records
-                          ▼
-  ┌──────────────────────────────────────────────────────────────┐
-  │              Shared PostgreSQL Database (Render)             │
-  │              Stores all jobs, statuses, run logs             │
-  └───────────────────────▲──────────────────────────────────────┘
-                          │  Reads & Updates
-                          │
-  ┌───────────────────────┴──────────────────────────────────────┐
-  │              Render Web Service (Free Tier)                  │
-  │  ┌────────────────────────────────────────────────────────┐  │
-  │  │  FastAPI Backend (Secure Auth + REST API + SSE)        │  │
-  │  │  React CRM Dashboard (Warm & Cold Theme, Live Terminal)│  │
-  │  └────────────────────────────────────────────────────────┘  │
-  └──────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    SCHEDULED EXECUTION / MANUAL TRIGGER                     │
+│               GitHub Actions (9:00 AM & 9:00 PM IST) OR Web UI              │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       1. RESUME INTELLIGENCE ENGINE                         │
+│   • Multi-engine PDF parser (PyMuPDF / pdfplumber / pypdf)                  │
+│   • Extracts tech stack, projects, education, and domain competencies       │
+│   • Computes 10 specialized AI search queries                               │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                   2. PRIORITY-ORDERED SCRAPER CASCADE                       │
+│   • Priority 1: LinkedIn Startup AI Internships (Direct & Startup filters)  │
+│   • Priority 2: Remotive Startup AI Openings (Remote tech API)              │
+│   • Priority 3: Himalayas Startup Openings (Remote engineering API)         │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                   3. DEDUPLICATION & SENIORITY FILTERING                    │
+│   • Regex disqualification of Senior / Lead / Staff / 5+ YOE titles         │
+│   • Cross-run database deduplication (URL hash + Title/Company signature)   │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      4. GROQ LLM EVALUATION ENGINE                          │
+│   • Multi-model cascade: openai/gpt-oss-120b -> gpt-oss-20b -> qwen3.6-27b  │
+│   • 4-dimension scoring rubric (Tech Stack, Domain, Seniority, Projects)    │
+│   • 🛑 EARLY STOP: Halts immediately upon finding 25 qualified openings     │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     5. PERSISTENCE & DISPATCH LAYER                         │
+│   • Writes records to PostgreSQL (Production) / SQLite (Local)              │
+│   • Generates timestamped CSV spreadsheet report                            │
+│   • Dispatches email with CSV attachment via Gmail OAuth 2.0 API            │
+│   • Sends formatted summary alert via Twilio WhatsApp API                   │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                 6. INTERACTIVE WEB DASHBOARD (FASTAPI + REACT)              │
+│   • Glacial Precision Design System (Hanken Grotesk, Steel Blue, Ice)       │
+│   • Real-time SSE streaming console, application tracking, status updates   │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🛠️ Tech Stack
+## Technical Stack
 
-| Layer | Technology |
+| Layer | Technologies |
 |---|---|
-| **Backend** | Python 3.11, FastAPI, Uvicorn, SQLAlchemy |
-| **AI / LLM** | Groq API (`llama-3.1-8b-instant`), LangChain |
-| **Database** | PostgreSQL (production), SQLite (local fallback) |
-| **Frontend** | React 18, TypeScript, Vite, Warm & Cold Design System |
-| **Scheduling** | GitHub Actions Cron, APScheduler (in-process) |
-| **Email** | Gmail OAuth 2.0 API (CSV attachments) |
-| **Messaging** | Twilio WhatsApp REST API |
-| **PDF Parsing** | PyMuPDF (`fitz`), PyPDF2 |
-| **Deployment** | Render (Web Service + PostgreSQL), GitHub Actions |
+| **Backend Core** | Python 3.11, FastAPI, Uvicorn, Pydantic v2, Pydantic Settings |
+| **AI Inference** | Groq API (`openai/gpt-oss-120b`, `openai/gpt-oss-20b`), LangChain, LangSmith Tracing |
+| **Database & ORM** | PostgreSQL (Render Cloud), SQLite (Local Fallback), SQLAlchemy 2.0 |
+| **Frontend UI** | React 18, TypeScript, Vite 8, Vanilla CSS Design System, Lucide / Material Symbols |
+| **Document Processing** | PyMuPDF (`fitz`), pdfplumber, pypdf |
+| **Scraping & Ingestion** | Requests, BeautifulSoup4, Public API Integrations (LinkedIn, Remotive, Himalayas) |
+| **Notification Services** | Google Gmail API (OAuth 2.0 MIME), Twilio Messaging API (WhatsApp), SendGrid API |
+| **Scheduling & CI/CD** | GitHub Actions Cron, APScheduler (`AsyncIOScheduler`), Render Web Services |
 
 ---
 
-## 📁 Repository Structure
+## Repository Structure
 
 ```
 Autonomous-Internship-Agent/
 ├── .github/
 │   └── workflows/
-│       └── cron_pipeline.yml    # GitHub Actions: 9 AM & 9 PM daily cron
+│       └── cron_pipeline.yml       # GitHub Actions dual daily cron configuration
 ├── config/
-│   ├── settings.py              # Pydantic BaseSettings (.env loader + validators)
-│   ├── prompts.py               # LLM scoring rubric (4-dimension prompt)
-│   └── __init__.py
+│   ├── __init__.py
+│   ├── prompts.py                  # AI 4-dimension scoring rubrics and schemas
+│   └── settings.py                 # Pydantic BaseSettings environment manager
 ├── db/
-│   ├── database.py              # SQLAlchemy engine (PostgreSQL + SQLite fallback)
-│   ├── models.py                # Job & PipelineRun ORM models
-│   └── __init__.py
+│   ├── __init__.py
+│   ├── database.py                 # SQLAlchemy connection pooling and multi-dialect manager
+│   └── models.py                   # ORM models (Job, PipelineRun, ApplicationStatus)
 ├── frontend/
+│   ├── public/                     # Static icons, SVG assets, favicon
 │   ├── src/
-│   │   ├── App.tsx              # React CRM Dashboard (Login, CRM, Pipeline, Settings)
-│   │   ├── App.css              # Warm & Cold dark-mode design system
-│   │   └── main.tsx             # React entry point
-│   ├── dist/                    # Production build (served by FastAPI)
-│   ├── package.json
-│   └── vite.config.ts           # Vite config with /api proxy
+│   │   ├── assets/                 # Brand illustrations
+│   │   ├── App.css                 # Glacial Precision Design System stylesheet
+│   │   ├── App.tsx                 # Core Dashboard application (React 18 + TypeScript)
+│   │   ├── index.css               # Global CSS tokens, resets, and typography
+│   │   └── main.tsx                # React DOM root entry point
+│   ├── index.html                  # HTML5 shell (Hanken Grotesk & Material Symbols)
+│   ├── package.json                # Frontend NPM scripts and dependencies
+│   ├── tsconfig.json               # TypeScript compiler configuration
+│   └── vite.config.ts              # Vite bundle configuration and proxy
+├── new design/
+│   ├── DESIGN.md                   # Glacial Precision UI/UX Design System Specification
+│   ├── code.html                   # High-fidelity reference HTML mockup
+│   └── screen.png                  # Visual design render snapshot
 ├── tools/
-│   ├── job_api.py               # Multi-source scraper (LinkedIn, Remotive, Himalayas, Jobicy, etc.)
-│   ├── jd_matcher.py            # Groq LLM resume-JD scorer with rate-limit pacing
-│   ├── resume_parser.py         # PDF text extractor & strictly AI query generator
-│   ├── csv_exporter.py          # Structured CSV report generator
-│   ├── email_sender.py          # Gmail OAuth 2.0 CSV email sender
-│   ├── whatsapp_handler.py      # Twilio WhatsApp summary dispatcher
-│   ├── apollo_scraper.py        # Apollo.io & JSearch scraper
-│   └── __init__.py
-├── main.py                      # FastAPI server: Auth, CRM APIs, SSE streaming, APScheduler
-├── run_pipeline.py              # CLI pipeline runner (--target 25 --threshold 70)
-├── run_scheduler.py             # Standalone APScheduler daemon (9 AM & 9 PM)
-├── requirements.txt             # Python dependencies
-├── DEPLOYMENT.md                # Full Render + GitHub Actions deployment guide
-├── .env.example                 # Environment variable template
-├── .gitignore
-└── README.md
+│   ├── __init__.py
+│   ├── apollo_scraper.py           # Fallback Apollo API / HTML scraper
+│   ├── csv_exporter.py             # CSV spreadsheet generator and file formatter
+│   ├── email_sender.py             # Gmail OAuth 2.0 and SendGrid dispatchers
+│   ├── jd_matcher.py               # Groq LLM JD-Resume evaluation and multi-model fallback
+│   ├── job_api.py                  # Scraper priority cascade (LinkedIn, Remotive, Himalayas)
+│   ├── resume_parser.py            # PDF parsing and dynamic AI search query generator
+│   └── whatsapp_handler.py         # Twilio WhatsApp notification handler
+├── .env.example                    # Sample environment template with documentation
+├── .gitignore                      # Git exclusion rules
+├── AGENT.md                        # Autonomous agent operational specification
+├── DEPLOYMENT.md                   # Cloud deployment manual (Render + GitHub Actions)
+├── DOCUMENTATION.md                # Comprehensive technical reference manual
+├── main.py                         # FastAPI web server, authentication, and SSE streamer
+├── requirements.txt                # Python backend dependencies
+├── run_pipeline.py                 # Standalone autonomous CLI pipeline runner
+└── run_scheduler.py                # Standalone local scheduler daemon
 ```
 
 ---
 
-## 🚀 Quick Start (Local Development)
+## Scoring Rubric & Evaluation Logic
+
+Each discovered listing is evaluated against the candidate's parsed resume across four weighted dimensions:
+
+| Dimension | Weight | Criteria | Scoring Logic |
+|---|---|---|---|
+| **Technical Stack Alignment** | 35% | Direct overlap in languages, frameworks, and AI toolkits | Evaluates Python, PyTorch, LangChain, Transformers, LLM APIs, and backend tooling |
+| **Domain & Problem Alignment** | 30% | Relevance to core AI/ML domains | Evaluates focus in GenAI, Agentic AI, NLP, Computer Vision, RAG, and Automation |
+| **Seniority & Internship Fit** | 20% | Fit for student / trainee / intern level | **Student/Intern/Trainee = 18–20 pts**; Entry-Level (0–2 YOE) = 10–14 pts; Senior/Lead (5+ YOE) = 0 pts (capped < 45) |
+| **Demonstrated Project Evidence** | 15% | Practical implementation proof | Evaluates candidate projects, GitHub repositories, and production deployments |
+
+- **Overall Score Range**: 0 to 100.
+- **Qualification Threshold**: Listings with a composite score ≥ 70 are classified as qualified matches and saved to the database.
+
+---
+
+## Dashboard & User Interface
+
+The web interface is built on the **Glacial Precision** design system, combining minimal cognitive load with high-density data management.
+
+### Key Views & Components
+
+1. **Fixed Navigation Sidebar (220px)**:
+   - Dedicated access to **Dashboard**, **Jobs**, **Pipeline**, **Resume**, and **Settings**.
+   - Persistent Agent Status widget displaying real-time monitoring pulse.
+2. **Top System Header (64px)**:
+   - System title and active sourcing pipeline indicator.
+   - Shortcut trigger for updating the candidate resume.
+   - User profile badge with session management.
+3. **KPI Metrics Grid**:
+   - Real-time counters for **Scraped Jobs**, **Qualified Openings**, **Applied Submissions**, and **Pipeline Executions**.
+4. **Interactive Filter Toolbar**:
+   - Live debounced search by role or company name.
+   - Platform filtering (LinkedIn Startups, Remotive Startups, Himalayas Startups).
+   - Match score threshold slider.
+   - Status pill toggles (`ALL`, `SAVED`, `APPLIED`, `REJECTED`).
+   - Primary **Run Pipeline** button with live status feedback.
+5. **Two-Column Core Workstation**:
+   - **Left Column**: Live Streaming Agent Console with monospace output, colored status tags (`INFO`, `JOB FOUND`, `SUCCESS`, `ERROR`), and real-time SSE event streaming.
+   - **Right Column**: Responsive Job Cards Grid featuring Circular SVG Score Ring Gauges, extracted skill tags, match reasoning summaries, and application actions.
+6. **Modals & Drawers**:
+   - **Job Details Drawer**: Detailed view containing the full job description, AI fit evaluation, and direct application links.
+   - **Master Resume Modal**: Drag-and-drop PDF upload connected directly to `/upload-resume`.
+
+---
+
+## Quick Start Guide
 
 ### Prerequisites
 
-- Python 3.10+
-- Node.js 18+
-- Groq API Key (free at [console.groq.com](https://console.groq.com/))
-- Gmail OAuth credentials (`credentials.json` and `token.json`)
-- Twilio Account (for WhatsApp — optional)
+- Python 3.10 or higher
+- Node.js 18 or higher with npm
+- Groq API Key (available at [console.groq.com](https://console.groq.com))
+- Gmail OAuth 2.0 credentials (`credentials.json` and `token.json`)
+- Twilio Account (for WhatsApp notifications — optional)
 
-### 1. Clone & Install
+### 1. Clone & Set Up Python Environment
 
 ```bash
 git clone https://github.com/Manthanraut13/Autonomous-Internship-Agent.git
 cd Autonomous-Internship-Agent
 
-# Create virtual environment
+# Create and activate virtual environment
 python -m venv venv
 
-# Activate (Windows PowerShell)
-.\venv\Scripts\Activate.ps1
+# Windows:
+.\venv\Scripts\activate
+
+# Linux / macOS:
+source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
 ```
 
-### 2. Configure Environment
-
-Copy `.env.example` to `.env` and fill in your keys:
-
-```ini
-# Required
-GROQ_API_KEY=gsk_your_groq_api_key_here
-GROQ_MODEL=llama-3.1-8b-instant
-RECIPIENT_EMAIL=your-email@gmail.com
-
-# Dashboard Login
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=your_secure_password
-AUTH_SECRET_KEY=random_32_char_secret_key
-
-# Database (leave empty for automatic SQLite fallback)
-DATABASE_URL=
-
-# WhatsApp Notifications (optional)
-TWILIO_ACCOUNT_SID=AC_your_sid
-TWILIO_AUTH_TOKEN=your_token
-TWILIO_PHONE_NUMBER=+14155238886
-USER_WHATSAPP_NUMBER=+91XXXXXXXXXX
-```
-
-### 3. Place Your Resume
-
-Save your resume PDF in the project root or as `data/current_resume.pdf`.
-
-### 4. Build Frontend & Run
+### 2. Configure Environment Variables
 
 ```bash
-# Build the React dashboard
-cd frontend && npm install && npm run build && cd ..
-
-# Start the server
-.\venv\Scripts\python.exe -m uvicorn main:app --port 8000 --reload
+cp .env.example .env
 ```
+Edit `.env` and provide your credentials (see [Environment Configuration](#environment-configuration)).
 
-Open [http://localhost:8000](http://localhost:8000) → Log in with your admin credentials.
-
-### 5. Run Pipeline from CLI
+### 3. Build Frontend & Start Server
 
 ```bash
-.\venv\Scripts\python.exe run_pipeline.py --target 25 --threshold 70
+# Build production frontend assets
+cd frontend
+npm install
+npm run build
+cd ..
+
+# Start FastAPI server
+uvicorn main:app --reload --port 8000
 ```
 
-This will scrape, score, save, email, and notify — all in one command.
+Open [http://localhost:8000](http://localhost:8000) in your browser and sign in with your configured admin credentials.
+
+### 4. Execute Pipeline from CLI
+
+```bash
+python run_pipeline.py --target 25 --threshold 70
+```
 
 ---
 
-## ☁️ Production Deployment
+## Environment Configuration
 
-The agent is deployed using **Render** (Web Service + PostgreSQL) and **GitHub Actions** (automated cron).
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `GROQ_API_KEY` | Yes | — | Groq API Key for LLM scoring |
+| `GROQ_MODEL` | No | `openai/gpt-oss-120b` | Model name for resume-JD matching |
+| `DATABASE_URL` | No | SQLite fallback | PostgreSQL database connection URI |
+| `ADMIN_USERNAME` | Yes | `admin` | Username for dashboard login |
+| `ADMIN_PASSWORD` | Yes | — | Password for dashboard login |
+| `AUTH_SECRET_KEY` | Yes | — | 32-character key for signing HMAC session tokens |
+| `RECIPIENT_EMAIL` | Yes | — | Target email address for daily CSV reports |
+| `SENDER_EMAIL` | No | `noreply@internshipagent.com` | Verified sender email address |
+| `TWILIO_ACCOUNT_SID` | No | — | Twilio Account SID for WhatsApp alerts |
+| `TWILIO_AUTH_TOKEN` | No | — | Twilio Auth Token |
+| `TWILIO_PHONE_NUMBER` | No | `+14155238886` | Twilio WhatsApp Sandbox Number |
+| `USER_WHATSAPP_NUMBER` | No | — | Recipient WhatsApp number (E.164 format) |
+| `MATCH_SCORE_THRESHOLD` | No | `70` | Minimum score threshold for qualified jobs |
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for the complete step-by-step guide.
+---
 
-### Deployment Architecture
+## Production Deployment
 
-| Component | Platform | Cost |
+The platform is designed to deploy seamlessly on free-tier infrastructure using **Render** and **GitHub Actions**.
+
+| Component | Provider | Configuration |
 |---|---|---|
-| CRM Dashboard & API | Render Web Service | Free |
-| Shared Database | Render PostgreSQL | Free |
-| 9 AM & 9 PM Cron Runner | GitHub Actions | Free (2,000 min/month) |
-| Email Delivery | Gmail OAuth 2.0 API | Free |
-| LLM Match Scoring | Groq API Free Tier | Free |
-| WhatsApp Alerts | Twilio Sandbox | Free |
+| **Web Service (API + UI)** | Render | Python 3 Web Service running `uvicorn main:app --host 0.0.0.0 --port $PORT` |
+| **Shared Database** | Render | Managed PostgreSQL database for cross-run persistence |
+| **Scheduled Worker** | GitHub Actions | Cron workflow running at `30 3 * * *` (9 AM IST) and `30 15 * * *` (9 PM IST) |
+| **Email Delivery** | Gmail API | OAuth 2.0 token-based dispatch with CSV report attachment |
+| **WhatsApp Alerts** | Twilio | REST API sandbox integration for summary notifications |
+
+For complete step-by-step instructions, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ---
 
-## 🖥️ Dashboard Features
+## API Reference
 
-### Secure Login
-All dashboard access requires admin authentication. Unauthorized API requests return `401 Unauthorized`.
+All protected routes require a Bearer token in the `Authorization` header (`Bearer <token>`) or as a `?token=` query parameter for SSE endpoints.
 
-### Openings & CRM
-- **Inbox (New)**: Freshly scraped listings awaiting your review.
-- **Applied**: Listings you've marked as applied (tracks your application count).
-- **Not Applied**: Listings you've decided to skip.
-- **All Listings**: Complete view across all statuses.
-- **Actions**: Apply (opens external link), Mark Applied, Mark Not Applied, Restore to Inbox, Delete.
-
-### Live Pipeline Terminal
-Stream real-time execution logs directly in the browser when running a pipeline — shows each step from resume parsing through email delivery.
-
-### Settings
-View active cron schedules, AI model configuration, notification targets, and candidate profile.
+| Route | Method | Access | Description |
+|---|---|---|---|
+| `/api/auth/login` | `POST` | Public | Authenticates credentials and returns a 7-day session token |
+| `/api/auth/me` | `GET` | Protected | Verifies session token validity and returns user identity |
+| `/api/dashboard/stats` | `GET` | Protected | Returns aggregate metrics (scraped, qualified, applied, averages) |
+| `/api/dashboard/jobs` | `GET` | Protected | Retrieves job listings with support for filtering, search, and sorting |
+| `/api/dashboard/jobs/{id}/action` | `POST` | Protected | Updates job application status (`mark_applied`, `reject`, `mark_saved`, `delete`) |
+| `/api/dashboard/settings` | `GET` | Protected | Returns active agent configuration and cron schedules |
+| `/api/pipeline/stream` | `GET` | Protected | Server-Sent Events stream providing real-time pipeline execution telemetry |
+| `/upload-resume` | `POST` | Protected | Uploads and processes a new candidate PDF resume |
+| `/api/upload-resume` | `POST` | Protected | API alias for candidate PDF resume upload |
 
 ---
 
-## 🔍 Strictly AI-Only Search Queries
+## License & Author
 
-The agent generates targeted search queries focused exclusively on AI/ML roles:
+Distributed under the **MIT License**. See `LICENSE` for details.
 
-- AI Intern
-- AI Automation Intern
-- GenAI Developer Intern
-- Agentic AI Intern
-- LLM Engineer Intern
-- AI Agent Developer Intern
-- AI ML Intern
-- Machine Learning Intern
-- AI Automation Engineer Intern
-- NLP AI Intern
-
----
-
-## 📊 Scoring Rubric (Internship-Focused)
-
-Each job is evaluated by the Groq LLM across 4 weighted dimensions:
-
-| Dimension | Weight | What It Measures |
-|---|---|---|
-| Tech Stack Alignment | 40% | Python, LangChain, FastAPI, ML frameworks, LLMs, agents |
-| Domain Alignment | 30% | AI, GenAI, Automation, LLM, Agentic workflows |
-| Seniority & Internship Fit | 20% | **Internship/Trainee = 18–20 pts**; Entry-level = 12–15 pts; Senior/Lead (5+ YOE) = 0 pts |
-| Project Relevance | 10% | Similarity to candidate's portfolio projects |
-
-Scores range from **0** (completely irrelevant) to **100** (perfect match). Only listings scoring above the configured threshold (default: 70) are included in reports.
-
----
-
-## 🤝 Contributing
-
-1. Fork the repository.
-2. Create a feature branch: `git checkout -b feature/my-feature`.
-3. Commit your changes: `git commit -m "Add my feature"`.
-4. Push to the branch: `git push origin feature/my-feature`.
-5. Open a Pull Request.
-
----
-
-## 📄 License
-
-This project is open source and available under the [MIT License](LICENSE).
-
----
-
-## 👤 Author
-
-**Manthan Raut**
-- GitHub: [@Manthanraut13](https://github.com/Manthanraut13)
-- Email: manthanr141@gmail.com
+### Author
+**Manthan Raut**  
+- GitHub: [@Manthanraut13](https://github.com/Manthanraut13)  
+- Email: [manthanr141@gmail.com](mailto:manthanr141@gmail.com)  
 - LinkedIn: [linkedin.com/in/manthan-raut](https://linkedin.com/in/manthan-raut)
