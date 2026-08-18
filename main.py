@@ -244,6 +244,7 @@ async def get_current_user_profile(user: str = Depends(require_admin)):
 
 
 @app.post("/upload-resume")
+@app.post("/api/upload-resume")
 async def upload_resume(
     file: UploadFile = File(...),
     admin: str = Depends(require_admin)
