@@ -138,14 +138,18 @@ Autonomous-Internship-Agent/
 │   ├── public/                     # Static assets, SVG icons, favicon
 │   ├── src/
 │   │   ├── assets/                 # Brand assets & illustrations
-│   │   ├── App.css                 # Warm & Cold Theme stylesheet (Amber, Teal, Slate)
+│   │   ├── App.css                 # Glacial Precision Theme stylesheet (Steel Blue, Ice, Teal)
 │   │   ├── App.tsx                 # Core Dashboard application (React 18 + TypeScript)
-│   │   ├── index.css               # Global CSS reset & typography
+│   │   ├── index.css               # Global CSS tokens, resets & typography
 │   │   └── main.tsx                # React DOM root entry point
-│   ├── index.html                  # HTML5 shell
+│   ├── index.html                  # HTML5 shell (Hanken Grotesk & Material Symbols)
 │   ├── package.json                # Frontend NPM scripts and dependencies
 │   ├── tsconfig.json               # TypeScript compiler configuration
 │   └── vite.config.ts              # Vite bundle configuration & dev proxy
+├── new design/
+│   ├── DESIGN.md                   # Glacial Precision UI/UX Design System Specification
+│   ├── code.html                   # High-fidelity reference HTML mockup
+│   └── screen.png                  # Visual design render snapshot
 ├── tools/
 │   ├── __init__.py                 # Package initializer
 │   ├── apollo_scraper.py           # Fallback Apollo API / HTML scraper
@@ -435,27 +439,87 @@ Top Matches:
 ### 10.1 Tech Stack & Build Pipeline
 
 - **Framework**: React 18 with TypeScript.
-- **Build Tool**: Vite 8 (Ultra-fast HMR and tree-shaking).
-- **Styling**: Vanilla CSS tokens with smooth transitions and glassmorphism.
+- **Build Tool**: Vite 8 (Ultra-fast HMR and production bundle optimization).
+- **Styling Architecture**: Vanilla CSS tokens (`frontend/src/App.css`, `frontend/src/index.css`) styled according to the **Glacial Precision** specification.
+- **Typography & Icons**:
+  - Primary Font: **Hanken Grotesk** (Geometric, clean corporate styling, weights 400–800).
+  - Terminal & Code Font: **JetBrains Mono** (Fixed-width clarity for telemetry logs).
+  - Iconography: **Material Symbols Outlined** (Google's variable icon suite).
 
 ---
 
-### 10.2 Warm & Cold Color Philosophy
+### 10.2 "Glacial Precision" Design System Philosophy
 
-The user interface uses a **Warm & Cold** palette:
-- **Warm Accents (Gold / Amber / Coral)**: Used for active buttons, CTAs, high match score badges, and glowing highlights (`#f59e0b`, `#fb923c`, `#ea580c`).
-- **Cold Accents (Slate / Teal / Emerald)**: Used for backgrounds, cards, applied badges, and terminal logs (`#090d12`, `#14b8a6`, `#10b981`).
+The design system is built around the narrative of **"Automated Intelligence with a Human Pulse."** It establishes a clean, cold-light corporate workstation aesthetic that minimizes cognitive load while prioritizing high-density job intelligence.
+
+#### Color Tokens:
+| Token Name | Hex Code | Purpose |
+|---|---|---|
+| `background` | `#eef2f7` | Cool grey-blue canvas base |
+| `sidebar` | `#dce6f0` | 220px fixed vertical navigation anchor |
+| `surface-ice` | `#f4f7fb` | 64px fixed header & sub-surface containers |
+| `surface-lowest` | `#ffffff` | Elevated data cards, modals & active pills |
+| `border-muted` | `#d4dde8` | Crisp 1px structural dividing lines |
+| `primary` | `#136299` | Steel Blue primary accent & brand interactive states |
+| `primary-container`| `#5b9bd5` | Active filters & primary KPI border highlight |
+| `secondary` | `#984623` | Terracotta accent for human actions (Applied status) |
+| `secondary-container`| `#fe956c` | Warm highlights & application indicators |
+| `tertiary` | `#006b5c` | Seafoam Teal for verified high match scores (80+) & active pulses |
+| `tertiary-container`| `#39a794` | Terminal headers & verified match highlights |
+| `score-mid` | `#e8a94a` | Amber warning accent & pipeline counter indicator |
+| `error` | `#ba1a1a` | Rose-red error alerts & rejection badges |
 
 ---
 
-### 10.3 Component Breakdown & State Management
+### 10.3 Component Breakdown & Navigation Architecture
 
-`frontend/src/App.tsx` provides:
-1. **Metric KPI Header**: Displays total scraped jobs, qualified matches, applied count, and active pipeline status.
-2. **Interactive Filter Toolbar**: Full-text search, platform filter dropdown, minimum score slider, and status toggles.
-3. **Live Streaming Console**: Real-time SSE terminal window with color-coded log levels and auto-scroll.
-4. **CRM Job Cards & Table**: Detailed job cards with expandable score breakdowns, matching skill tags, and direct application links.
-5. **Resume Upload Modal**: Drag-and-drop PDF resume upload with live preview.
+`frontend/src/App.tsx` organizes the interface into dedicated functional modules:
+
+1. **Fixed Sidebar Navigation (220px)**:
+   - **Branding**: `account_tree` icon with `"AGENT CORE"` header.
+   - **Navigation Tabs**:
+     - 📊 **Dashboard** (`activeTab === 'dashboard'`)
+     - 💼 **Jobs** (`activeTab === 'jobs'`)
+     - ⚡ **Pipeline** (`activeTab === 'pipeline'`)
+     - 📄 **Resume** (`activeTab === 'resume'`)
+     - ⚙️ **Settings** (`activeTab === 'settings'`)
+   - **Active Indicator**: White pill container with a 4px Steel Blue left border (`border-l-4 border-[#136299]`).
+   - **Agent Status Indicator**: Bottom badge featuring a live CSS pulsating emerald dot (`.pulse-dot`) indicating active monitoring.
+
+2. **Top System Header (64px)**:
+   - Dynamic view title and system tagline (*"Automated Intelligence with Human Pulse"*).
+   - Live **"Sourcing Pipeline"** badge with real-time status dot.
+   - Master Resume quick upload shortcut button.
+   - User profile avatar and logout session button.
+
+3. **KPI Metrics Grid (4 Tonal Cards)**:
+   - 🔍 **Scraped**: `#5b9bd5` left border, search icon, total scraped jobs, `+12% today`.
+   - ✅ **Qualified**: `#39a794` left border, check_circle icon, count of jobs with Score ≥ 70.
+   - 📤 **Applied**: `#984623` left border, send icon, count of submitted job applications.
+   - 🔄 **Pipeline Runs**: `#e8a94a` left border, autorenew icon, dual daily cron execution count.
+
+4. **Filter Toolbar**:
+   - Full-text search with live debounce across job titles and companies.
+   - Platform select dropdown (`All Platforms`, `LinkedIn Startups`, `Remotive Startups`, `Himalayas Startups`).
+   - Interactive match score slider (`Score > [threshold]`).
+   - Status pill toggles (`ALL`, `SAVED`, `APPLIED`, `REJECTED`).
+   - Primary **"Run Pipeline"** CTA button with animated loading spinner.
+
+5. **Two-Column Workstation Layout**:
+   - **Left Column (Agent Console — 33% width)**:
+     - Dark `#1e2b3a` container with macOS-style window controls (red, yellow, green dots).
+     - `#151f2a` terminal header with `terminal` icon and clear button.
+     - Live SSE stream with auto-scroll and color-coded status badges (`INFO`, `JOB FOUND`, `SUCCESS`, `ERROR`, `MATCH`).
+   - **Right Column (Job Cards Grid — 67% width)**:
+     - Elevated `#ffffff` cards with 1px border `#d4dde8` and hover transition to `#5b9bd5`.
+     - **Circular SVG Score Ring Gauge** with colored stroke (`#006b5c` for 80+, `#5b9bd5` for 70-79, `#e8a94a` for 50-69, `#d66b6b` for <50).
+     - Source platform chip and extracted skill badges (`Python`, `LangChain`, `LLMs`, `PyTorch`, `FastAPI`).
+     - AI Match reasoning snippet with 2-line clamp.
+     - Action buttons: "Apply Now" (opens direct URL), "Mark as Applied" (check icon), "Reject" (close icon), and "View Details" (eye icon).
+
+6. **Interactive Modals & Drawers**:
+   - **Job Details Modal**: Expandable drawer displaying full job description, 4-dimension score breakdown, key matching points, and application links.
+   - **Master Resume Modal**: Drag-and-drop PDF upload zone directly communicating with `/upload-resume`.
 
 ---
 
