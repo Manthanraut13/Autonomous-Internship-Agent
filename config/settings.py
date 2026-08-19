@@ -132,11 +132,16 @@ class Settings(BaseSettings):
     candidate_linkedin: str = "https://linkedin.com/in/manthan-raut"
 
     # ------------------------------------------------------------------ #
-    # Dashboard Authentication                                             #
+    # Dashboard Authentication  (ALL REQUIRED — no insecure defaults)      #
     # ------------------------------------------------------------------ #
-    admin_username: str = "admin"
-    admin_password: str = "admin123"
-    auth_secret_key: str = "agent-secure-auth-secret-key-change-in-production"
+    admin_username: str       # ADMIN_USERNAME env var (required)
+    admin_password: str       # ADMIN_PASSWORD env var (required, ≥12 chars)
+    auth_secret_key: str      # AUTH_SECRET_KEY env var (required, ≥32 chars)
+
+    # ------------------------------------------------------------------ #
+    # CORS Allowed Origins  (comma-separated; empty = same-origin only)    #
+    # ------------------------------------------------------------------ #
+    cors_allowed_origins: Union[List[str], str] = ""
 
     # ------------------------------------------------------------------ #
     # Debug flag                                                           #
@@ -261,6 +266,64 @@ class Settings(BaseSettings):
                 f"APPROVAL_TIMEOUT_HOURS must be >= 1. Got: {value}"
             )
         return value
+
+    # ================================================================== #
+    # Security Validators (vuln-0001, vuln-0002)                          #
+    # ================================================================== #
+
+    @field_validator("auth_secret_key", mode="after")
+    @classmethod
+    def validate_auth_secret_key(cls, value: str) -> str:
+        """Reject the old compromised placeholder and enforce minimum length."""
+        compromised_defaults = {
+            "agent-secure-auth-secret-key-change-in-production",
+            "change_this_to_a_random_32_char_secret_key",
+        }
+        if value in compromised_defaults:
+            raise ValueError(
+                "AUTH_SECRET_KEY is set to a known insecure default. "
+                "Generate a strong random value: python -c \"import secrets; print(secrets.token_hex(32))\""
+            )
+        if len(value) < 32:
+            raise ValueError(
+                f"AUTH_SECRET_KEY must be at least 32 characters for HMAC-SHA256 security. "
+                f"Current length: {len(value)}"
+            )
+        return value
+
+    @field_validator("admin_password", mode="after")
+    @classmethod
+    def validate_admin_password(cls, value: str) -> str:
+        """Enforce strong admin password (≥12 chars, mixed case + digit)."""
+        weak_passwords = {"admin123", "password", "admin", "123456", "admin1234"}
+        if value.lower() in weak_passwords:
+            raise ValueError(
+                "ADMIN_PASSWORD is set to a known weak password. "
+                "Choose a strong, unique password (≥12 characters)."
+            )
+        if len(value) < 12:
+            raise ValueError(
+                f"ADMIN_PASSWORD must be at least 12 characters. Current length: {len(value)}"
+            )
+        has_upper = any(c.isupper() for c in value)
+        has_lower = any(c.islower() for c in value)
+        has_digit = any(c.isdigit() for c in value)
+        if not (has_upper and has_lower and has_digit):
+            raise ValueError(
+                "ADMIN_PASSWORD must contain at least one uppercase letter, "
+                "one lowercase letter, and one digit."
+            )
+        return value
+
+    @field_validator("cors_allowed_origins", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, value) -> List[str]:
+        """Parse comma-separated CORS origins into a list."""
+        if isinstance(value, list):
+            return [s.strip() for s in value if s.strip()]
+        if isinstance(value, str) and value.strip():
+            return [s.strip() for s in value.split(",") if s.strip()]
+        return []
 
     # ================================================================== #
     # Model-level validator (runs after all fields are set)               #

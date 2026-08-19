@@ -183,13 +183,14 @@ async def shutdown_event():
         logger.info("📅 APScheduler stopped.")
 
 
-# CORS middleware
+# CORS middleware — vuln-0003 fix: explicit origin allowlist, no wildcard
+_cors_origins = settings.cors_allowed_origins if settings.cors_allowed_origins else []
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,               # Env-driven allowlist (no wildcard)
+    allow_credentials=bool(_cors_origins),      # Only allow credentials with explicit origins
+    allow_methods=["GET", "POST", "OPTIONS"],   # Minimum required methods
+    allow_headers=["Authorization", "Content-Type"],  # Minimum required headers
 )
 
 # Mount compiled React CRM frontend if dist exists
@@ -249,19 +250,66 @@ async def upload_resume(
     file: UploadFile = File(...),
     admin: str = Depends(require_admin)
 ) -> Dict[str, str]:
-    if not file.filename.lower().endswith(('.pdf', '.txt')):
+    """
+    Secure resume upload with defense-in-depth validation (vuln-0005 fix):
+    1. File size limit (5 MB)
+    2. Extension whitelist
+    3. Magic bytes / content validation
+    4. Path traversal protection
+    """
+    # --- 1. Extension whitelist ---
+    filename_lower = (file.filename or "").lower()
+    if not filename_lower.endswith(('.pdf', '.txt')):
         raise HTTPException(status_code=400, detail="Only PDF and TXT files are allowed.")
-    upload_dir = "data"
+
+    # --- 2. Read with size limit (5 MB) ---
+    MAX_UPLOAD_SIZE = 5 * 1024 * 1024  # 5 MB
+    contents = await file.read()
+    if len(contents) > MAX_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large ({len(contents) / (1024*1024):.1f} MB). Maximum allowed: 5 MB."
+        )
+    if len(contents) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    # --- 3. Content / magic bytes validation ---
+    if filename_lower.endswith('.pdf'):
+        # PDF files must start with the %PDF- magic header
+        if not contents[:5] == b'%PDF-':
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid PDF file: content does not match PDF format (missing %PDF- header)."
+            )
+        target_name = "current_resume.pdf"
+    else:
+        # TXT files must be valid UTF-8
+        try:
+            contents.decode('utf-8')
+        except (UnicodeDecodeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid text file: content is not valid UTF-8 encoded text."
+            )
+        target_name = "current_resume.txt"
+
+    # --- 4. Path traversal protection ---
+    upload_dir = os.path.abspath("data")
     os.makedirs(upload_dir, exist_ok=True)
-    file_path = os.path.join(upload_dir, "current_resume.pdf" if file.filename.endswith('.pdf') else "current_resume.txt")
+    file_path = os.path.normpath(os.path.join(upload_dir, target_name))
+    if not file_path.startswith(upload_dir):
+        raise HTTPException(status_code=400, detail="Invalid file path detected.")
+
+    # --- 5. Write validated content ---
     try:
-        contents = await file.read()
         with open(file_path, "wb") as f:
             f.write(contents)
     except Exception as e:
         logger.error(f"Error saving resume: {e}")
         raise HTTPException(status_code=500, detail="Failed to save resume.")
-    return {"status": "success", "message": f"Resume {file.filename} uploaded successfully."}
+
+    logger.info(f"Resume uploaded: {target_name} ({len(contents)} bytes)")
+    return {"status": "success", "message": f"Resume uploaded successfully ({len(contents) / 1024:.1f} KB)."}
 
 
 # --------------------------------------------------------------------------- #
