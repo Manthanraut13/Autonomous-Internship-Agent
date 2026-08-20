@@ -132,11 +132,11 @@ class Settings(BaseSettings):
     candidate_linkedin: str = "https://linkedin.com/in/manthan-raut"
 
     # ------------------------------------------------------------------ #
-    # Dashboard Authentication  (ALL REQUIRED — no insecure defaults)      #
+    # Dashboard Authentication  (Optional for CLI/Cron, Validated for Web) #
     # ------------------------------------------------------------------ #
-    admin_username: str       # ADMIN_USERNAME env var (required)
-    admin_password: str       # ADMIN_PASSWORD env var (required, ≥12 chars)
-    auth_secret_key: str      # AUTH_SECRET_KEY env var (required, ≥32 chars)
+    admin_username: Optional[str] = None
+    admin_password: Optional[str] = None
+    auth_secret_key: Optional[str] = None
 
     # ------------------------------------------------------------------ #
     # CORS Allowed Origins  (comma-separated; empty = same-origin only)    #
@@ -271,10 +271,13 @@ class Settings(BaseSettings):
     # Security Validators (vuln-0001, vuln-0002)                          #
     # ================================================================== #
 
-    @field_validator("auth_secret_key", mode="after")
+    @field_validator("auth_secret_key", mode="before")
     @classmethod
-    def validate_auth_secret_key(cls, value: str) -> str:
-        """Reject the old compromised placeholder and enforce minimum length."""
+    def validate_auth_secret_key(cls, value: Optional[str]) -> Optional[str]:
+        """Validate and enforce strong auth secret key when provided."""
+        if value is None or not str(value).strip():
+            return None
+        value = str(value).strip()
         compromised_defaults = {
             "agent-secure-auth-secret-key-change-in-production",
             "change_this_to_a_random_32_char_secret_key",
@@ -291,10 +294,13 @@ class Settings(BaseSettings):
             )
         return value
 
-    @field_validator("admin_password", mode="after")
+    @field_validator("admin_password", mode="before")
     @classmethod
-    def validate_admin_password(cls, value: str) -> str:
-        """Enforce strong admin password (≥12 chars, mixed case + digit)."""
+    def validate_admin_password(cls, value: Optional[str]) -> Optional[str]:
+        """Enforce strong admin password (≥12 chars, mixed case + digit) when provided."""
+        if value is None or not str(value).strip():
+            return None
+        value = str(value).strip()
         weak_passwords = {"admin123", "password", "admin", "123456", "admin1234"}
         if value.lower() in weak_passwords:
             raise ValueError(
@@ -314,6 +320,14 @@ class Settings(BaseSettings):
                 "one lowercase letter, and one digit."
             )
         return value
+
+    @field_validator("admin_username", mode="before")
+    @classmethod
+    def validate_admin_username(cls, value: Optional[str]) -> Optional[str]:
+        if value is None or not str(value).strip():
+            return None
+        return str(value).strip()
+
 
     @field_validator("cors_allowed_origins", mode="before")
     @classmethod

@@ -61,10 +61,8 @@ jobs:
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
           TWILIO_PHONE_NUMBER: ${{ secrets.TWILIO_PHONE_NUMBER }}
           USER_WHATSAPP_NUMBER: ${{ secrets.USER_WHATSAPP_NUMBER }}
-          ADMIN_USERNAME: ${{ secrets.ADMIN_USERNAME }}
-          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
-          AUTH_SECRET_KEY: ${{ secrets.AUTH_SECRET_KEY }}
           MATCH_SCORE_THRESHOLD: 70
         run: |
           python run_pipeline.py --target 25 --threshold 70
+
 

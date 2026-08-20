@@ -57,6 +57,10 @@ init_db()
 # Security & Token Authentication (HMAC-SHA256)                               #
 # --------------------------------------------------------------------------- #
 
+# Use configured secret or generate a cryptographically secure 256-bit runtime secret
+_AUTH_SECRET_KEY = settings.auth_secret_key or secrets.token_hex(32)
+
+
 def create_access_token(username: str, expires_in_seconds: int = 86400 * 7) -> str:
     """Creates a signed HMAC-SHA256 auth token valid for 7 days."""
     payload = {
@@ -69,7 +73,7 @@ def create_access_token(username: str, expires_in_seconds: int = 86400 * 7) -> s
     payload_b64 = base64.urlsafe_b64encode(payload_json).decode('utf-8').rstrip('=')
     
     signature = hmac.new(
-        settings.auth_secret_key.encode('utf-8'),
+        _AUTH_SECRET_KEY.encode('utf-8'),
         payload_b64.encode('utf-8'),
         hashlib.sha256
     ).hexdigest()
@@ -84,7 +88,7 @@ def verify_access_token(token: str) -> Optional[str]:
     try:
         payload_b64, signature = token.rsplit(".", 1)
         expected_sig = hmac.new(
-            settings.auth_secret_key.encode('utf-8'),
+            _AUTH_SECRET_KEY.encode('utf-8'),
             payload_b64.encode('utf-8'),
             hashlib.sha256
         ).hexdigest()
@@ -218,8 +222,18 @@ async def login(credentials: Dict[str, str]):
     username = credentials.get("username", "").strip()
     password = credentials.get("password", "").strip()
 
-    valid_user = secrets.compare_digest(username, settings.admin_username)
-    valid_pass = secrets.compare_digest(password, settings.admin_password)
+    admin_user = settings.admin_username or "admin"
+    admin_pass = settings.admin_password
+
+    if not admin_pass:
+        logger.error("ADMIN_PASSWORD has not been configured in the environment.")
+        raise HTTPException(
+            status_code=500,
+            detail="Admin credentials have not been configured on this server."
+        )
+
+    valid_user = secrets.compare_digest(username, admin_user)
+    valid_pass = secrets.compare_digest(password, admin_pass)
 
     if not (valid_user and valid_pass):
         logger.warning(f"Failed login attempt for user: '{username}'")
@@ -233,6 +247,7 @@ async def login(credentials: Dict[str, str]):
         "username": username,
         "message": "Authentication successful"
     }
+
 
 
 @app.get("/api/auth/me")
