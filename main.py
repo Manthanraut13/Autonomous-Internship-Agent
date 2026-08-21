@@ -613,6 +613,11 @@ async def stream_pipeline(
                             sig in seen_in_run_signatures):
                             continue
 
+                        # Strict Remote / Online / Virtual opening constraint
+                        from tools.job_api import is_remote_or_virtual
+                        if not is_remote_or_virtual(j):
+                            continue
+
                         if link: seen_in_run_links.add(link)
                         if apply_url: seen_in_run_links.add(apply_url)
                         if title and company: seen_in_run_signatures.add(sig)
@@ -621,7 +626,8 @@ async def stream_pipeline(
                         if not desc or len(desc.strip()) < 30:
                             continue
 
-                        yield evt("matching", f"[{len(scored_jobs)}/{target} Found] 🔄 Scoring: {j['title']} @ {j['company']}...")
+                        yield evt("matching", f"[{len(scored_jobs)}/{target} Found] 🔄 Scoring: {j['title']} @ {j['company']} (Remote/Virtual)...")
+
 
                         try:
                             result = await asyncio.to_thread(match_resume_to_job, resume_text, desc)

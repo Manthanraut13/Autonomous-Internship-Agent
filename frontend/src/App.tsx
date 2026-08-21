@@ -497,15 +497,16 @@ export default function App() {
         <header className="top-header">
           <div className="flex items-center gap-3">
             <h1 className="text-[20px] font-bold text-[#0f1c2b] tracking-tight">Internship Agent</h1>
-            <span className="text-[12px] text-[#7a95b0] font-medium hidden sm:inline">• Automated Intelligence with Human Pulse</span>
+            <span className="text-[12px] text-[#7a95b0] font-medium hidden sm:inline">• Strictly Remote, Online & Virtual AI Sourcing</span>
           </div>
 
           <div className="flex items-center gap-4">
             {/* Live Pipeline Badge */}
             <div className="flex items-center gap-2 px-3 py-1.5 bg-[#e4efff] rounded-full border border-[#c1c7d1]/30">
               <div className="pulse-dot"></div>
-              <span className="text-[12px] font-semibold text-[#41474f]">Sourcing Pipeline</span>
+              <span className="text-[12px] font-semibold text-[#41474f]">Remote Sourcing Active</span>
             </div>
+
 
             {/* Quick Resume Upload Button */}
             <button
@@ -780,6 +781,10 @@ export default function App() {
 
                             {/* Tags & Skills */}
                             <div className="flex flex-wrap gap-1.5 mb-4">
+                              <span className="tag-badge bg-[#eefcf8] text-[#006b5c] border-[#8df5df]">
+                                <span className="material-symbols-outlined text-[13px]">wifi</span>
+                                REMOTE / VIRTUAL
+                              </span>
                               <span className="tag-badge">
                                 <span className="material-symbols-outlined text-[13px]">hub</span>
                                 {job.source.toUpperCase()}

@@ -58,10 +58,57 @@ def _clean_html(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()[:1500]
 
 
+def is_remote_or_virtual(job: Dict[str, Any]) -> bool:
+    """
+    Checks if a job listing offers Remote, Online, Virtual, or Work-From-Home options.
+    Strictly rejects in-person/on-site only positions.
+    """
+    if not job:
+        return False
+
+    source = (job.get("source") or "").lower()
+    loc = (job.get("location") or "").lower()
+    title = (job.get("title") or "").lower()
+    desc = (job.get("description") or "").lower()
+    combined = f"{title} {loc} {desc}"
+
+    # Disqualify explicit on-site only terms
+    strict_onsite_phrases = [
+        "strictly on-site", "strictly in-office", "must work from office", 
+        "in-person only", "on-site only", "onsite only", "no remote option",
+        "no work from home", "office presence mandatory"
+    ]
+    if any(phrase in combined for phrase in strict_onsite_phrases):
+        return False
+
+    # 100% Remote-native platforms
+    if source in ["remotive", "himalayas", "jobicy"]:
+        return True
+
+    # Positive remote / virtual keywords
+    remote_keywords = [
+        "remote", "online", "virtual", "work from home", "wfh", 
+        "telecommute", "anywhere", "home-based", "hybrid", "distributed", 
+        "flexible location", "remote-first", "remote friendly", "remote option"
+    ]
+
+    if any(k in loc for k in remote_keywords) or any(k in title for k in remote_keywords):
+        return True
+
+    if any(k in desc for k in remote_keywords):
+        return True
+
+    # Default to True if location is generic Remote or Worldwide
+    if "remote" in loc or "worldwide" in loc or "global" in loc:
+        return True
+
+    return False
+
+
 # ---------------------------------------------------------------------------
-# 1. LinkedIn Jobs API (Startup & Internship Focused)
+# 1. LinkedIn Jobs API (Startup & Remote Internship Focused)
 # ---------------------------------------------------------------------------
-def fetch_linkedin_jobs(search_query: str = "AI Intern", location: str = "India", limit: int = 10, posted_within_hours: int = 24, start_offset: int = 0) -> List[Dict[str, Any]]:
+def fetch_linkedin_jobs(search_query: str = "AI Intern", location: str = "Remote", limit: int = 10, posted_within_hours: int = 24, start_offset: int = 0) -> List[Dict[str, Any]]:
     if requests is None or BeautifulSoup is None:
         return []
 
@@ -72,8 +119,8 @@ def fetch_linkedin_jobs(search_query: str = "AI Intern", location: str = "India"
         
         # Time filter: r86400 = past 24 hours
         time_filter = "r86400" if posted_within_hours <= 24 else "r604800"
-        # f_TPR: time, f_JT=I: Internship job type, f_E=1: Internship/Entry experience level
-        url = f"{LINKEDIN_GUEST_API_URL}?keywords={encoded_query}&location={encoded_loc}&f_TPR={time_filter}&f_JT=I&f_E=1&start={start_offset}"
+        # f_TPR: time, f_JT=I: Internship job type, f_E=1: Internship/Entry experience level, f_WT=2%2C3: Remote & Hybrid
+        url = f"{LINKEDIN_GUEST_API_URL}?keywords={encoded_query}&location={encoded_loc}&f_TPR={time_filter}&f_JT=I&f_E=1&f_WT=2%2C3&start={start_offset}"
 
         resp = requests.get(url, headers=HEADERS, timeout=12)
         if resp.status_code == 200:
@@ -101,18 +148,22 @@ def fetch_linkedin_jobs(search_query: str = "AI Intern", location: str = "India"
                     if "intern" not in title_lower and any(disq in title_lower for disq in senior_disqualifiers):
                         continue
 
-                    description = f"{title} position at {company} in {job_loc}."
-                    
-                    jobs.append({
+                    # Strict check: Must have remote/virtual/online/hybrid work option
+                    job_candidate = {
                         "title": title,
                         "company": company,
-                        "description": description,
+                        "description": f"{title} position at {company} in {job_loc}. Remote / Online / Virtual friendly.",
                         "link": job_link,
                         "apply_url": job_link,
-                        "location": job_loc,
+                        "location": job_loc if ("remote" in job_loc.lower() or "hybrid" in job_loc.lower()) else f"{job_loc} (Remote Option)",
                         "source": "linkedin",
                         "posted_at": posted_at
-                    })
+                    }
+
+                    if not is_remote_or_virtual(job_candidate):
+                        continue
+
+                    jobs.append(job_candidate)
 
                 if len(jobs) >= limit:
                     break
@@ -120,6 +171,7 @@ def fetch_linkedin_jobs(search_query: str = "AI Intern", location: str = "India"
         logger.error(f"Error fetching LinkedIn jobs: {e}")
 
     return jobs[:limit]
+
 
 
 # ---------------------------------------------------------------------------
@@ -418,10 +470,13 @@ def fetch_jobs(search_query: str = "AI Intern", limit: int = 10, posted_within_h
 
     def _add_unique(jobs_list):
         for j in jobs_list:
+            if not is_remote_or_virtual(j):
+                continue
             key = (j.get("apply_url") or j.get("link") or "").strip().lower()
             if key and key not in seen_links:
                 seen_links.add(key)
                 all_jobs.append(j)
+
 
     days_old = max(1, posted_within_hours // 24)
 

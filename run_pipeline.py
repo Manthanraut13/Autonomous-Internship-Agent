@@ -227,6 +227,11 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
                     duplicate_skipped_count += 1
                     continue
 
+                # Strict Remote / Online / Virtual opening constraint
+                from tools.job_api import is_remote_or_virtual
+                if not is_remote_or_virtual(j):
+                    continue
+
                 if link:
                     seen_in_run_links.add(link)
                 if apply_url:
@@ -241,7 +246,8 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
                 fresh_jobs_for_query += 1
 
                 # Evaluate immediately with Groq LLM
-                print(f"      🔄 Scoring: {j['title']} @ {j['company']}…", end="", flush=True)
+                print(f"      🔄 Scoring: {j['title']} @ {j['company']} (Remote/Virtual)…", end="", flush=True)
+
 
                 try:
                     result = match_resume_to_job(resume_text, desc)

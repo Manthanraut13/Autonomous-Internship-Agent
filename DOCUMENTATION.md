@@ -86,6 +86,7 @@ The **Autonomous Internship Agent** is a full-stack, enterprise-grade AI automat
                                                          ▼
                                   ┌──────────────────────────────────────────────┐
                                   │      3. DEDUPLICATION & PRE-FILTERING        │
+                                  │  • Strictly Remote / Online / Virtual filter │
                                   │  • Rejects 5+ YOE / Senior / Staff titles    │
                                   │  • Cross-checks DB signature (Title + Co)    │
                                   │  • Cross-checks apply_url / link hashes      │

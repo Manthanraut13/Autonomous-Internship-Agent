@@ -47,14 +47,18 @@ Evaluate the candidate across four distinct components and sum the points:
    - Weak or indirect evidence = 3–7 pts.
    - No relevant projects = 0–2 pts.
 
+5. **MANDATORY Remote / Online / Virtual Work Type Constraint**:
+   - The candidate **EXCLUSIVELY accepts Remote, Online, Virtual, or Work-From-Home (WFH)** positions.
+   - If a job description or location explicitly indicates it is **strictly on-site / in-office only** with NO remote, online, or virtual option, immediately assign an overall **score of 0** and state 'Disqualified: Strict on-site / in-office only (no remote/virtual option)' in reasoning.
+
 ## Score Guidelines
-- **90–100**: Exceptional direct fit — AI/GenAI internship matching the candidate's skills and projects.
-- **75–89**: Strong fit — relevant AI internship or junior entry role with high domain overlap.
+- **90–100**: Exceptional direct fit — Remote/Online AI/GenAI internship matching the candidate's skills and projects.
+- **75–89**: Strong fit — relevant Remote/Online AI internship or junior entry role with high domain overlap.
 - **55–74**: Moderate fit — candidate has transferable technical skills but gaps in specific tools/experience.
 - **30–54**: Weak fit — experienced full-time role requiring years of experience, or significant tech stack gaps.
-- **0–29**: Poor fit — completely different field, domain, or senior management role.
+- **0–29**: Poor fit or Disqualified — non-remote on-site only, completely different field, or senior management role.
 
-DO NOT score every job the same (e.g., 85). Be discriminating, prioritize startup internships, and penalize experienced full-time roles.
+DO NOT score every job the same (e.g., 85). Be discriminating, prioritize remote startup internships, and penalize experienced full-time or on-site roles.
 """
 
 

@@ -27,6 +27,7 @@ The platform continuously monitors top startup job ecosystems, extracts candidat
 | Capability | Technical Implementation | Impact |
 |---|---|---|
 | **Startup-First Sourcing** | Cascading scraper targeting **LinkedIn Startups**, **Remotive Startups**, and **Himalayas Startups** | Prioritizes high-velocity startup teams and high-impact intern roles |
+| **Strictly Remote / Virtual / Online** | Filter heuristics and parameters (`f_WT=2%2C3`, Remote APIs, in-office disqualifiers) | Guarantees that 100% of delivered openings offer remote, online, or work-from-home options |
 | **Strictly AI-Only Filtering** | Search vectors locked exclusively to AI, GenAI, LLM, Agentic AI, and ML domains | Eliminates noise from generic web, generic IT, or non-technical listings |
 | **Internship-First Pre-Filtering** | Automated disqualification regex rejecting senior/lead roles (5+ YOE) | Focuses exclusively on student, trainee, and entry-level talent |
 | **Groq LLM Match Engine** | High-throughput inference via `openai/gpt-oss-120b` with automatic model fallback cascade | Provides accurate, differentiated 0–100 match scoring in under 500ms |
@@ -35,6 +36,7 @@ The platform continuously monitors top startup job ecosystems, extracts candidat
 | **Dual Daily Automation** | Automated serverless execution at **9:00 AM** and **9:00 PM IST** via GitHub Actions | Zero-maintenance, scheduled daily execution |
 | **Glacial Precision CRM UI** | React 18 + Vite dashboard with live SSE streaming terminal, filters, and resume uploader | Centralized interface for application status tracking and manual pipeline execution |
 | **Enterprise Security** | HMAC-SHA256 authenticated sessions with constant-time password verification | Protects API routes and dashboard controls against unauthorized access |
+
 
 ---
 
