@@ -297,19 +297,19 @@ class Settings(BaseSettings):
     @field_validator("admin_password", mode="before")
     @classmethod
     def validate_admin_password(cls, value: Optional[str]) -> Optional[str]:
-        """Enforce strong admin password (≥12 chars, mixed case + digit) when provided."""
+        """Enforce strong admin password (≥8 chars, mixed case + digit) when provided."""
         if value is None or not str(value).strip():
             return None
         value = str(value).strip()
-        weak_passwords = {"admin123", "password", "admin", "123456", "admin1234"}
+        weak_passwords = {"admin123", "password", "admin", "123456", "admin1234", "qwerty"}
         if value.lower() in weak_passwords:
             raise ValueError(
                 "ADMIN_PASSWORD is set to a known weak password. "
-                "Choose a strong, unique password (≥12 characters)."
+                "Choose a strong, unique password (≥8 characters)."
             )
-        if len(value) < 12:
+        if len(value) < 8:
             raise ValueError(
-                f"ADMIN_PASSWORD must be at least 12 characters. Current length: {len(value)}"
+                f"ADMIN_PASSWORD must be at least 8 characters. Current length: {len(value)}"
             )
         has_upper = any(c.isupper() for c in value)
         has_lower = any(c.islower() for c in value)
