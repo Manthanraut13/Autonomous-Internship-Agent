@@ -40,3 +40,8 @@ python-dateutil==2.9.0.post0
 google-api-python-client==2.118.0
 google-auth-httplib2==0.2.0
 google-auth-oauthlib==1.2.0
+
+# Semantic matching (resume embedding)
+sentence-transformers
+numpy
+scikit-learn

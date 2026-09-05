@@ -95,6 +95,8 @@ class Job(Base):
     # Matching
     match_score = Column(Float, nullable=True)
     match_reasoning = Column(Text, nullable=True)
+    semantic_score = Column(Float, nullable=True)  # Pre-LLM embedding similarity (0-100)
+    role_type = Column(String(20), nullable=True)   # "internship" or "full-time"
 
     # Workflow lifecycle status: 'saved' (Inbox/New), 'applied', 'rejected' (Not Applied)
     status = Column(

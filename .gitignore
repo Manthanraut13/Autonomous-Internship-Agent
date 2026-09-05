@@ -47,3 +47,4 @@ token.json
 # Temporary test & runner directories
 strix_runs/
 .waylog/
+scratch/
