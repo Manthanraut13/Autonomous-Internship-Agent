@@ -535,3 +535,13 @@ def get_search_queries_from_resume(file_path: str, max_queries: int = 8) -> List
 
     return queries[:max_queries]
 
+
+def chunk_resume_for_embedding(resume_path: str) -> List[Dict[str, str]]:
+    """
+    Chunks a resume PDF into semantic sections for vector embedding.
+    Returns list of dicts with 'section' and 'text'.
+    """
+    from tools.semantic_matcher import _chunk_resume_text
+    raw_text = extract_text_from_pdf(resume_path)
+    return _chunk_resume_text(raw_text)
+

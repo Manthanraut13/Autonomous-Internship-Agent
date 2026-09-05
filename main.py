@@ -409,6 +409,8 @@ async def get_dashboard_jobs(
         "scraped_at": j.scraped_at.isoformat() if j.scraped_at else None,
         "updated_at": j.updated_at.isoformat() if j.updated_at else None,
         "match_score": j.match_score, "match_reasoning": j.match_reasoning,
+        "semantic_score": j.semantic_score,
+        "role_type": j.role_type or "internship",
         "status": j.status,
     } for j in jobs]
     return {"total": len(results), "jobs": results}
@@ -518,6 +520,7 @@ async def stream_pipeline(
 
             resume_path = None
             for candidate in [
+                os.path.join(BASE_DIR, "Manthan_Raut.pdf"),
                 os.path.join(BASE_DIR, "Manthan_Raut_Resume (1).pdf"),
                 os.path.join(BASE_DIR, "data", "current_resume.pdf"),
             ]:
@@ -526,11 +529,19 @@ async def stream_pipeline(
                     break
 
             if not resume_path:
-                yield evt("error", "No resume found. Place your PDF in the project root.")
+                yield evt("error", "No resume found. Place Manthan_Raut.pdf in the project root.")
                 return
 
             resume_text = extract_text_from_pdf(resume_path)
             yield evt("resume", f"Resume loaded: {os.path.basename(resume_path)} ({len(resume_text)} chars)")
+            await asyncio.sleep(0.1)
+
+            # Pre-compute resume embeddings once
+            yield evt("resume", "Generating vector embeddings for candidate resume sections...")
+            from tools.semantic_matcher import ResumeEmbedder, classify_role_type
+            from tools.jd_fetcher import fetch_full_job_description
+            embedder = await asyncio.to_thread(ResumeEmbedder, resume_path)
+            yield evt("resume", f"Vector embeddings ready ({len(embedder.chunks)} semantic sections cached)")
             await asyncio.sleep(0.1)
 
             # ── Step 2: Generate search queries ──────────────────────────
@@ -623,10 +634,31 @@ async def stream_pipeline(
                         if title and company: seen_in_run_signatures.add(sig)
 
                         desc = j.get("description", "")
+                        if len(desc.strip()) < 200 and j.get("link"):
+                            try:
+                                enriched = await asyncio.to_thread(fetch_full_job_description, j["link"])
+                                if enriched and len(enriched) > len(desc):
+                                    desc = enriched
+                                    j["description"] = desc
+                            except Exception:
+                                pass
+
                         if not desc or len(desc.strip()) < 30:
                             continue
 
-                        yield evt("matching", f"[{len(scored_jobs)}/{target} Found] 🔄 Scoring: {j['title']} @ {j['company']} (Remote/Virtual)...")
+                        # Classify role type (internship vs full-time)
+                        role_type = classify_role_type(j)
+                        j["role_type"] = role_type
+
+                        # Pre-filter using local embeddings
+                        sem_score = await asyncio.to_thread(embedder.compute_semantic_score, desc)
+                        j["semantic_score"] = sem_score
+
+                        if sem_score < 35.0:
+                            yield evt("matching", f"⏩ [{role_type.upper()}] Pre-filtered low semantic match ({sem_score}/100): {j['title']} @ {j['company']}")
+                            continue
+
+                        yield evt("matching", f"[{len(scored_jobs)}/{target} Found] 🔄 Scoring [{role_type.upper()}]: {j['title']} @ {j['company']} (Semantic: {sem_score})...")
 
 
                         try:
@@ -643,8 +675,8 @@ async def stream_pipeline(
                         j["key_matches"] = key_matches
 
                         emoji = "✅" if score >= threshold else "⬇️"
-                        yield evt("matching", f"[{len(scored_jobs)+1}/{target}] {emoji} {j['title']} @ {j['company']} → {score}/100",
-                                  {"title": j["title"], "company": j["company"], "score": score})
+                        yield evt("matching", f"[{len(scored_jobs)+1}/{target}] {emoji} [{role_type.upper()}] {j['title']} @ {j['company']} → {score}/100",
+                                  {"title": j["title"], "company": j["company"], "score": score, "role_type": role_type, "semantic_score": sem_score})
 
                         if score >= threshold:
                             scored_jobs.append(j)
@@ -706,6 +738,8 @@ async def stream_pipeline(
                         posted_at=posted_at_val,
                         match_score=job["match_score"],
                         match_reasoning=job.get("match_reasoning", ""),
+                        semantic_score=job.get("semantic_score"),
+                        role_type=job.get("role_type", "internship"),
                         status="saved",
                     )
                     db.add(db_job)

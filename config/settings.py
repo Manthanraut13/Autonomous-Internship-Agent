@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     # Declared as str here to prevent pydantic-settings from trying to   #
     # JSON-decode the value; the @field_validator converts it to a list. #
     # ------------------------------------------------------------------ #
-    job_sources: Union[List[str], str] = "indeed,linkedin,internship.com,arbeitnow,remotive,himalayas,apollo,jsearch"
+    job_sources: Union[List[str], str] = "linkedin,wellfound,yc,peerlist,otta,levelsfyi,simplifyjobs,mlh,gsoc,outreachy"
 
     # ------------------------------------------------------------------ #
     # Additional APIs                                                      #
