@@ -5,9 +5,17 @@ Embedding-based semantic matching engine for resume-to-JD comparison.
 
 Architecture:
   1. Chunks the resume into semantic sections (summary, skills, experience, projects, education)
-  2. Generates embeddings once using sentence-transformers (all-MiniLM-L6-v2)
-  3. For each job description, computes cosine similarity against resume chunks
-  4. Returns a weighted semantic score (0-100)
+  2. For long sections (> 800 chars), creates overlapping sub-chunks (window=800, overlap=100)
+  3. Generates embeddings for every sub-chunk using sentence-transformers (all-MiniLM-L6-v2)
+  4. For each job description, computes cosine similarity against all sub-chunks
+  5. Scores each section using MAX pooling across its sub-chunks (best match, not average)
+  6. Returns a weighted semantic score (0-100)
+
+BUG-9 FIXED:
+  Old code truncated BOTH resume chunks and job descriptions to 512 characters
+  before encoding, cutting off most of the content in long Skills/Projects sections.
+  Fix: no manual pre-truncation. sentence-transformers handles tokenization internally.
+  For very long sections, use sliding-window sub-chunking so all content is embedded.
 
 Also provides role type classification (internship vs full-time).
 """
@@ -49,6 +57,37 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Sliding-window sub-chunking
+# BUG-9 FIX: replaces hard [:512] truncation
+# ──────────────────────────────────────────────────────────────────────────────
+
+# all-MiniLM-L6-v2 processes ~256 WordPiece tokens (~800-1000 chars of English text).
+# We window at 800 chars with 100-char overlap to preserve boundary context.
+_SUBCHUNK_WINDOW = 800
+_SUBCHUNK_OVERLAP = 100
+
+
+def _make_sub_chunks(section: str, text: str) -> List[Dict[str, str]]:
+    """
+    Splits a section's text into overlapping sub-chunks if it exceeds the window size.
+    Short texts are returned as a single chunk.
+    Each sub-chunk retains its parent section label.
+    """
+    if len(text) <= _SUBCHUNK_WINDOW:
+        return [{"section": section, "text": text}]
+
+    sub_chunks = []
+    start = 0
+    while start < len(text):
+        end = min(start + _SUBCHUNK_WINDOW, len(text))
+        sub_chunks.append({"section": section, "text": text[start:end]})
+        if end == len(text):
+            break
+        start += (_SUBCHUNK_WINDOW - _SUBCHUNK_OVERLAP)
+    return sub_chunks
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Resume Chunking
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -56,6 +95,7 @@ def _chunk_resume_text(raw_text: str) -> List[Dict[str, str]]:
     """
     Splits resume text into semantic sections.
     Returns list of {"section": <label>, "text": <content>} dicts.
+    Long sections are further split into overlapping sub-chunks.
     """
     section_patterns = {
         "summary": r"(?:SUMMARY|OBJECTIVE|ABOUT\s+ME|PROFILE)\b",
@@ -65,9 +105,10 @@ def _chunk_resume_text(raw_text: str) -> List[Dict[str, str]]:
         "education": r"(?:EDUCATION|ACADEMIC|ACADEMICS)\b",
     }
 
-    chunks: List[Dict[str, str]] = []
+    # First pass: split raw text into sections
+    sections: List[Dict[str, str]] = []
     lines = raw_text.split("\n")
-    current_section = "summary"  # Default: everything before first header is summary
+    current_section = "summary"
     current_lines: List[str] = []
 
     for line in lines:
@@ -75,7 +116,6 @@ def _chunk_resume_text(raw_text: str) -> List[Dict[str, str]]:
         if not stripped:
             continue
 
-        # Check if this line is a section header
         matched_section = None
         for sec_name, pattern in section_patterns.items():
             if re.search(pattern, stripped, re.IGNORECASE) and len(stripped) < 60:
@@ -83,11 +123,10 @@ def _chunk_resume_text(raw_text: str) -> List[Dict[str, str]]:
                 break
 
         if matched_section:
-            # Save previous section
             if current_lines:
                 text = " ".join(current_lines).strip()
                 if len(text) > 20:
-                    chunks.append({"section": current_section, "text": text})
+                    sections.append({"section": current_section, "text": text})
             current_section = matched_section
             current_lines = []
         else:
@@ -97,13 +136,18 @@ def _chunk_resume_text(raw_text: str) -> List[Dict[str, str]]:
     if current_lines:
         text = " ".join(current_lines).strip()
         if len(text) > 20:
-            chunks.append({"section": current_section, "text": text})
+            sections.append({"section": current_section, "text": text})
 
-    # If no sections found, treat entire text as one chunk
-    if not chunks:
-        chunks.append({"section": "summary", "text": raw_text[:2000]})
+    # If no sections found, treat entire text as summary
+    if not sections:
+        sections.append({"section": "summary", "text": raw_text})
 
-    return chunks
+    # Second pass: apply sliding-window sub-chunking to long sections
+    all_sub_chunks: List[Dict[str, str]] = []
+    for sec in sections:
+        all_sub_chunks.extend(_make_sub_chunks(sec["section"], sec["text"]))
+
+    return all_sub_chunks
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -112,11 +156,11 @@ def _chunk_resume_text(raw_text: str) -> List[Dict[str, str]]:
 
 # Section weights for final score computation
 SECTION_WEIGHTS = {
-    "skills": 0.40,
+    "skills":     0.40,
     "experience": 0.25,
-    "projects": 0.20,
-    "summary": 0.10,
-    "education": 0.05,
+    "projects":   0.20,
+    "summary":    0.10,
+    "education":  0.05,
 }
 
 
@@ -124,6 +168,15 @@ class ResumeEmbedder:
     """
     Pre-computes resume section embeddings once.
     Call compute_semantic_score(jd_text) for each job description.
+
+    BUG-9 FIX applied:
+    - Resume sub-chunks are embedded WITHOUT [:512] truncation.
+    - sentence-transformers handles tokenization internally (256-token limit
+      per call, which covers ~800 chars of English text naturally).
+    - Job description is embedded in full (no pre-truncation) — sentence-transformers
+      internally truncates to its token limit.
+    - Scoring uses MAX pooling per section (best sub-chunk match wins),
+      not averaging of truncated averages.
     """
 
     def __init__(self, resume_path: str):
@@ -137,51 +190,61 @@ class ResumeEmbedder:
         self.chunk_embeddings: List[Dict[str, Any]] = []
 
         for chunk in self.chunks:
-            embedding = model.encode(chunk["text"][:512], convert_to_numpy=True)
+            # BUG-9 FIX: NO [:512] truncation — pass full sub-chunk text
+            embedding = model.encode(chunk["text"], convert_to_numpy=True)
             self.chunk_embeddings.append({
                 "section": chunk["section"],
                 "text": chunk["text"],
                 "embedding": embedding,
             })
 
+        unique_sections = set(c["section"] for c in self.chunks)
         logger.info(
-            f"ResumeEmbedder initialized: {len(self.chunks)} chunks from "
-            f"{', '.join(set(c['section'] for c in self.chunks))}"
+            f"ResumeEmbedder initialized: {len(self.chunks)} sub-chunks from "
+            f"sections: {', '.join(sorted(unique_sections))}"
         )
 
     def compute_semantic_score(self, job_description: str) -> float:
         """
-        Computes weighted cosine similarity between job description and resume chunks.
+        Computes weighted cosine similarity between job description and resume sub-chunks.
+        Uses MAX pooling per section (best sub-chunk match, not average of truncated chunks).
         Returns score 0-100.
+
+        BUG-9 FIX: job_description is NOT pre-truncated to 512 chars.
         """
         if not job_description or len(job_description.strip()) < 20:
             return 0.0
 
         model = _get_model()
-        jd_embedding = model.encode(job_description[:512], convert_to_numpy=True)
+        # BUG-9 FIX: no [:512] truncation on job description
+        jd_embedding = model.encode(job_description, convert_to_numpy=True)
 
-        section_scores: Dict[str, List[float]] = {}
+        # Collect per-sub-chunk similarities, grouped by section
+        section_sims: Dict[str, List[float]] = {}
         for chunk_data in self.chunk_embeddings:
             section = chunk_data["section"]
             sim = _cosine_similarity(jd_embedding, chunk_data["embedding"])
-            section_scores.setdefault(section, []).append(sim)
+            section_sims.setdefault(section, []).append(sim)
 
-        # Average similarity per section, then weighted sum
+        # MAX pooling: take the BEST sub-chunk match per section
+        # (A long Skills section split into 3 sub-chunks → score = best of 3)
+        section_max_sim: Dict[str, float] = {
+            sec: max(sims) for sec, sims in section_sims.items()
+        }
+
+        # Weighted sum across sections
         weighted_score = 0.0
         total_weight = 0.0
-
         for section, weight in SECTION_WEIGHTS.items():
-            if section in section_scores:
-                avg_sim = sum(section_scores[section]) / len(section_scores[section])
-                weighted_score += avg_sim * weight
+            if section in section_max_sim:
+                weighted_score += section_max_sim[section] * weight
                 total_weight += weight
 
         # Normalize if not all sections were present
         if total_weight > 0:
             weighted_score /= total_weight
 
-        # Convert to 0-100 scale (cosine similarity for these models typically ranges 0.1-0.8)
-        # Map 0.2-0.7 range to 20-95 for more usable scores
+        # Map cosine similarity range (0.15–0.70) → 0–100 score
         normalized = max(0.0, min(1.0, (weighted_score - 0.15) / 0.55))
         return round(normalized * 100, 1)
 
@@ -199,6 +262,11 @@ def classify_role_type(job: Dict[str, Any]) -> str:
     source = (job.get("source") or "").lower()
     combined = f"{title} {desc}"
 
+    # Sources that are inherently internship/fellowship programs
+    internship_sources = {"mlh", "gsoc", "outreachy", "internshala", "pittcsc", "simplifyjobs"}
+    if source in internship_sources:
+        return "internship"
+
     # Strong internship signals
     internship_keywords = [
         "intern", "internship", "co-op", "coop", "trainee",
@@ -215,12 +283,6 @@ def classify_role_type(job: Dict[str, Any]) -> str:
         "mid-level", "experienced professional",
     ]
 
-    # Sources that are inherently internship/fellowship programs
-    internship_sources = {"mlh", "gsoc", "outreachy", "levelsfyi"}
-
-    if source in internship_sources:
-        return "internship"
-
     intern_score = sum(1 for kw in internship_keywords if kw in combined)
     ft_score = sum(1 for kw in fulltime_keywords if kw in combined)
 
@@ -229,8 +291,9 @@ def classify_role_type(job: Dict[str, Any]) -> str:
     elif ft_score > intern_score:
         return "full-time"
 
-    # Default: if title is short and ambiguous, check for entry-level clues
+    # Default: entry-level clues
     if "entry" in combined or "junior" in combined or "associate" in combined:
         return "internship"
 
-    return "internship"  # Default for ambiguous roles (user wants internships)
+    # Default to internship since the agent targets internships
+    return "internship"

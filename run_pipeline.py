@@ -28,7 +28,7 @@ import sys
 import os
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Set, Tuple
 
 # Ensure project root is on the import path
@@ -101,7 +101,7 @@ def get_resume_text(resume_path: str) -> str:
 
 def get_existing_db_signatures() -> Tuple[Set[str], Set[str], Set[Tuple[str, str]]]:
     """
-    Query existing records in SQLite to ensure no duplicates from previous runs
+    Query existing records in PostgreSQL to ensure no duplicates from previous runs
     are re-processed or emailed again.
     """
     with get_db_context() as db:
@@ -216,10 +216,9 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
             if len(scored_jobs) >= target_matches:
                 break
 
-            # If platform has already reached its quota and we still have remaining platforms to try,
-            # break to give subsequent platforms a fair share. If later platforms underdeliver,
-            # dynamic cascading allows more from earlier platforms.
-            if (platform_matched_counts[plat_source] - plat_matches_before) >= (plat_quota * 2):
+            # BUG-8 FIX: hard cap at exact platform quota — no 2x multiplier.
+            # Previously `plat_quota * 2` allowed LinkedIn to take 14 of 25 slots.
+            if (platform_matched_counts[plat_source] - plat_matches_before) >= plat_quota:
                 break
 
             print(f"\n   ➤ [{plat_name}] Query: \"{query}\" (limit=10, 24h)")
@@ -254,6 +253,19 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
                 if not is_remote_or_virtual(j):
                     continue
 
+                # BUG-7 FIX: 24-hour date gate.
+                # Jobs from scrapers that provide real timestamps are checked against cutoff.
+                # posted_at is a datetime object (set by scrapers); None/string means skip check.
+                posted_at_val = j.get("posted_at")
+                if isinstance(posted_at_val, datetime):
+                    # Ensure tz-aware comparison
+                    if posted_at_val.tzinfo is None:
+                        posted_at_val = posted_at_val.replace(tzinfo=timezone.utc)
+                    date_cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+                    if posted_at_val < date_cutoff:
+                        continue  # genuinely stale — skip
+
+
                 if link:
                     seen_in_run_links.add(link)
                 if apply_url:
@@ -263,8 +275,10 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
 
                 desc = j.get("description", "")
 
-                # Enrich short descriptions if needed
-                if len(desc.strip()) < 200 and j.get("link"):
+                # BUG-11 FIX: raised threshold from 200 to 400 chars.
+                # Most scraper-generated descriptions are ~60 chars ("AI Intern at Startup."),
+                # which are meaningless for semantic matching even though they pass 200.
+                if len(desc.strip()) < 400 and j.get("link"):
                     try:
                         enriched = fetch_full_job_description(j["link"])
                         if enriched and len(enriched) > len(desc):

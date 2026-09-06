@@ -32,13 +32,33 @@ except ImportError:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def extract_text_from_pdf(file_path: str) -> str:
-    """Extract raw text from PDF using PyMuPDF (fitz) with PyPDF2 fallback."""
+    """
+    Extract raw text from PDF using PyMuPDF (fitz) with PyPDF2 fallback.
+
+    BUG-10 FIX: Uses page.get_text("blocks", sort=True) which reads text blocks
+    in correct spatial reading order (top-left → bottom-right). This prevents
+    two-column resume layouts from having their columns interleaved.
+    block[4] is the text content; block[0-3] are the bounding box coordinates.
+    """
     text = ""
     if fitz is not None:
         try:
             doc = fitz.open(file_path)
             for page in doc:
-                text += page.get_text() + "\n"
+                # sort=True: PyMuPDF uses spatial (x0, y0) ordering → correct reading order
+                blocks = page.get_text("blocks", sort=True)
+                for block in blocks:
+                    # block structure: (x0, y0, x1, y1, text, block_no, block_type)
+                    # block_type 0 = text, 1 = image — only include text blocks
+                    if len(block) >= 6 and block[6] == 0:
+                        block_text = block[4].strip()
+                        if block_text:
+                            text += block_text + "\n"
+                    elif len(block) >= 5:
+                        block_text = block[4].strip()
+                        if block_text:
+                            text += block_text + "\n"
+                text += "\n"  # page separator
             if text.strip():
                 return text
         except Exception:
