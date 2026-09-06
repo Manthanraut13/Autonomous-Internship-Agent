@@ -51,11 +51,12 @@ def _create_engine_with_fallback():
     pool_kwargs: dict = {}
 
     if db_url.startswith("postgresql"):
+        # Supabase / cloud postgres compatibility: ensure sslmode or timeout handling
         pool_kwargs = {
             "pool_size": 5,
             "max_overflow": 10,
             "pool_timeout": 30,
-            "pool_recycle": 1800,
+            "pool_recycle": 300,  # recycle connections frequently for Supabase pooler
             "pool_pre_ping": True,
         }
         try:
@@ -137,6 +138,21 @@ def init_db() -> None:
         table_names = list(Base.metadata.tables.keys())
         logger.info(f"Tables created / verified: {table_names}")
         print(f"Database tables created: {table_names}")
+
+        # Dynamic Schema Auto-Migration: Ensure all model columns exist in physical DB
+        from sqlalchemy import inspect
+        inspector = inspect(engine)
+        if "jobs" in inspector.get_table_names():
+            existing_cols = {col["name"] for col in inspector.get_columns("jobs")}
+            with engine.begin() as conn:
+                if "semantic_score" not in existing_cols:
+                    logger.info("Migrating: Adding missing 'semantic_score' column to jobs table...")
+                    conn.execute(text("ALTER TABLE jobs ADD COLUMN semantic_score FLOAT;"))
+                    print("Auto-migration applied: Added 'semantic_score' column to jobs table.")
+                if "role_type" not in existing_cols:
+                    logger.info("Migrating: Adding missing 'role_type' column to jobs table...")
+                    conn.execute(text("ALTER TABLE jobs ADD COLUMN role_type VARCHAR(20) DEFAULT 'internship';"))
+                    print("Auto-migration applied: Added 'role_type' column to jobs table.")
     except Exception as exc:
         logger.error(f"Failed to create database tables: {exc}", exc_info=True)
         raise

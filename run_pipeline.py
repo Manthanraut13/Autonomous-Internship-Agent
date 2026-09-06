@@ -357,46 +357,50 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
     # ── Save to Database ──────────────────────────────────────────────────
     print(f"\n💾 Saving {len(final_jobs)} new listings to database…")
     saved_jobs = []
-    with get_db_context() as db:
-        import dateutil.parser
+    try:
+        with get_db_context() as db:
+            import dateutil.parser
 
-        for job in final_jobs:
-            posted_at_val = job.get("posted_at")
-            if isinstance(posted_at_val, str) and posted_at_val:
-                try:
-                    posted_at_val = dateutil.parser.parse(posted_at_val)
-                except Exception:
+            for job in final_jobs:
+                posted_at_val = job.get("posted_at")
+                if isinstance(posted_at_val, str) and posted_at_val:
+                    try:
+                        posted_at_val = dateutil.parser.parse(posted_at_val)
+                    except Exception:
+                        posted_at_val = None
+                elif not posted_at_val:
                     posted_at_val = None
-            elif not posted_at_val:
-                posted_at_val = None
 
-            db_job = Job(
-                job_id=f"job-{uuid.uuid4().hex[:8]}",
-                title=job["title"],
-                company=job["company"],
-                description=job.get("description", "")[:2000],
-                link=job["link"],
-                apply_url=job.get("apply_url", ""),
-                location=job.get("location", "Remote"),
-                source=job.get("source", "aggregated"),
-                posted_at=posted_at_val,
-                match_score=job["match_score"],
-                match_reasoning=job.get("match_reasoning", ""),
-                semantic_score=job.get("semantic_score"),
-                role_type=job.get("role_type", "internship"),
-                status="saved",
-            )
-            db.add(db_job)
-            saved_jobs.append(db_job)
-        db.commit()
-
-    print(f"   Saved {len(saved_jobs)} jobs.")
+                db_job = Job(
+                    job_id=f"job-{uuid.uuid4().hex[:8]}",
+                    title=job["title"],
+                    company=job["company"],
+                    description=job.get("description", "")[:2000],
+                    link=job["link"],
+                    apply_url=job.get("apply_url", ""),
+                    location=job.get("location", "Remote"),
+                    source=job.get("source", "aggregated"),
+                    posted_at=posted_at_val,
+                    match_score=job["match_score"],
+                    match_reasoning=job.get("match_reasoning", ""),
+                    semantic_score=job.get("semantic_score"),
+                    role_type=job.get("role_type", "internship"),
+                    status="saved",
+                )
+                db.add(db_job)
+                saved_jobs.append(db_job)
+            db.commit()
+        print(f"   Saved {len(saved_jobs)} jobs.")
+    except Exception as db_err:
+        print(f"   ⚠️ Warning: Could not save jobs to database: {db_err}")
+        print("   Proceeding with CSV report generation and notifications...")
 
     # ── Export to CSV ─────────────────────────────────────────────────────
     print(f"\n📝 Generating CSV report with {len(final_jobs)} unique matches…")
     csv_filename = f"internships_{time.strftime('%Y%m%d_%H%M%S')}.csv"
     csv_path = export_jobs_to_csv(final_jobs, output_filename=csv_filename)
 
+    email_sent = False
     if csv_path:
         print(f"   CSV generated at: {csv_path}")
 
@@ -420,20 +424,23 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
         print("   WhatsApp is not fully configured, skipping notification.")
 
     # ── Log Run to Database ───────────────────────────────────────────────
-    with get_db_context() as db:
-        run_log = PipelineRun(
-            started_at=run_start,
-            completed_at=datetime.utcnow(),
-            status="success",
-            jobs_found=total_scraped_count,
-            jobs_matched=len(final_jobs),
-            email_sent=bool(email_sent),
-            whatsapp_sent=bool(whatsapp_sent),
-            csv_path=csv_path,
-            source="cli"
-        )
-        db.add(run_log)
-        db.commit()
+    try:
+        with get_db_context() as db:
+            run_log = PipelineRun(
+                started_at=run_start,
+                completed_at=datetime.utcnow(),
+                status="success",
+                jobs_found=total_scraped_count,
+                jobs_matched=len(final_jobs),
+                email_sent=bool(email_sent),
+                whatsapp_sent=bool(whatsapp_sent if 'whatsapp_sent' in locals() else False),
+                csv_path=csv_path,
+                source="cli"
+            )
+            db.add(run_log)
+            db.commit()
+    except Exception as log_err:
+        print(f"   ⚠️ Warning: Could not log pipeline run to database: {log_err}")
 
     print(f"\n{'=' * 65}")
     print(f"  ✅  PIPELINE COMPLETE — {len(final_jobs)} UNIQUE AI LISTINGS DELIVERED")
