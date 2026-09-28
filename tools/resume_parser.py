@@ -8,8 +8,8 @@ Parses a resume (PDF or TXT) and extracts:
   - Work experience & projects
   - Professional summary
 
-All extracted data is used by the Vision AI to fill job application forms
-with accurate, complete information from the actual resume.
+All extracted data is used by the semantic matcher and Groq LLM scoring engine
+to evaluate candidate fit and generate tailored search queries.
 """
 
 import os
@@ -142,19 +142,20 @@ def _extract_name(text: str) -> str:
 
 
 def _extract_location(text: str) -> str:
-    """Extract city/country from common resume patterns."""
+    """Extract city/state/country from common resume patterns."""
     patterns = [
         r"Location:\s*(.+)",
         r"Based in\s+([A-Za-z ,]+)",
-        r"\|\s*([A-Za-z ,]{3,30})\s*\|",   # e.g. | India |
+        r"([A-Za-z\s]+,\s*(?:Maharashtra|Karnataka|Tamil Nadu|Delhi|Telangana|Gujarat|India)[\w\s,]*)",
+        r"\b(Pune|Bengaluru|Bangalore|Hyderabad|Mumbai|Delhi|Noida|Gurgaon|Gurugram|Chennai|Kolkata|Ahmedabad)\b",
     ]
     for p in patterns:
         m = re.search(p, text, re.IGNORECASE)
         if m:
-            loc = m.group(1).strip().rstrip("|").strip()
-            if len(loc) < 40:
+            loc = m.group(1).split("\n")[-1].strip().rstrip("|").strip()
+            if len(loc) < 50 and not any(k in loc.lower() for k in ["engineer", "developer", "generative", "intelligence", "ai"]):
                 return loc
-    return "India"
+    return ""
 
 
 def _extract_summary(text: str) -> str:
@@ -325,74 +326,63 @@ def _extract_experience_and_projects(text: str) -> List[Dict[str, str]]:
 
 def get_candidate_profile_from_resume(file_path: str) -> Dict[str, Any]:
     """
-    Full candidate profile extracted from resume PDF.
-    Returns everything a job application form could ask for:
-      name, email, phone, github, linkedin, location, summary,
-      skills (list), education (list), experience/projects (list),
-      degree, institution, cgpa, year_of_graduation.
-    Falls back gracefully to settings or hardcoded defaults.
+    Full candidate profile extracted from resume PDF or text.
+    Extracts authentic candidate attributes directly from the document.
+    Does NOT insert fake or hardcoded default assumptions.
     """
-
-    # ── Defaults from settings ────────────────────────────────────────────────
     profile: Dict[str, Any] = {
-        "name": "Manthan Raut",
-        "first_name": "Manthan",
-        "last_name": "Raut",
-        "email": "manthanr141@gmail.com",
-        "phone": "+919529883808",
-        "github": "https://github.com/Manthanraut13",
-        "linkedin": "https://linkedin.com/in/manthan-raut",
-        "location": "India",
-        "summary": (
-            "Enthusiastic Software Engineer with expertise in Python, Full Stack Web Development, "
-            "REST APIs, and AI/LLM Application Development. Experienced in FastAPI, React, "
-            "PostgreSQL, LangChain, and browser automation."
-        ),
-        "skills": ["Python", "FastAPI", "React", "SQL", "PostgreSQL", "Docker", "Git",
-                   "LangChain", "OpenAI API", "Playwright", "JavaScript", "TypeScript"],
+        "name": "",
+        "first_name": "",
+        "last_name": "",
+        "email": "",
+        "phone": "",
+        "github": "",
+        "linkedin": "",
+        "location": "",
+        "summary": "",
+        "skills": [],
         "education": [],
         "experience": [],
-        "degree": "Bachelor of Technology in Computer Science",
+        "degree": "",
         "institution": "",
         "cgpa": "",
         "year_of_graduation": "",
-        "years_of_experience": "1",
-        "notice_period": "Immediately",
-        "expected_salary": "Negotiable",
-        "work_authorization": "Yes",
-        "requires_sponsorship": "No",
+        "years_of_experience": "",
+        "notice_period": "",
+        "expected_salary": "",
+        "work_authorization": "",
+        "requires_sponsorship": "",
         "resume_pdf": os.path.abspath(file_path) if file_path and os.path.exists(file_path) else "",
     }
 
-    # Override with settings values
+    # If settings provide explicitly configured user overrides, populate them
     try:
         from config.settings import settings
-        if settings.candidate_name:
+        if getattr(settings, "candidate_name", None):
             profile["name"] = settings.candidate_name
-        if settings.candidate_email:
+        if getattr(settings, "candidate_email", None):
             profile["email"] = settings.candidate_email
-        if settings.candidate_phone:
+        if getattr(settings, "candidate_phone", None):
             profile["phone"] = settings.candidate_phone
-        if settings.candidate_github:
+        if getattr(settings, "candidate_github", None):
             profile["github"] = settings.candidate_github
-        if settings.candidate_linkedin:
+        if getattr(settings, "candidate_linkedin", None):
             profile["linkedin"] = settings.candidate_linkedin
     except Exception:
         pass
 
-    parts = profile["name"].split()
-    profile["first_name"] = parts[0]
-    profile["last_name"] = parts[-1] if len(parts) > 1 else ""
-
-    # ── Parse PDF ─────────────────────────────────────────────────────────────
     if not (file_path and os.path.exists(file_path)):
+        if profile["name"]:
+            parts = profile["name"].split()
+            profile["first_name"] = parts[0]
+            profile["last_name"] = parts[-1] if len(parts) > 1 else ""
         return profile
 
     try:
         ext = file_path.lower().rsplit(".", 1)[-1]
         raw_text = extract_text_from_pdf(file_path) if ext == "pdf" else extract_text_from_txt(file_path)
 
-        # Contact info
+        # Contact info from document
         email = _extract_email(raw_text)
         if email:
             profile["email"] = email
@@ -412,7 +402,9 @@ def get_candidate_profile_from_resume(file_path: str) -> Dict[str, Any]:
         name = _extract_name(raw_text)
         if name:
             profile["name"] = name
-            parts = name.split()
+
+        if profile["name"]:
+            parts = profile["name"].split()
             profile["first_name"] = parts[0]
             profile["last_name"] = parts[-1] if len(parts) > 1 else ""
 
@@ -444,6 +436,21 @@ def get_candidate_profile_from_resume(file_path: str) -> Dict[str, Any]:
         experience = _extract_experience_and_projects(raw_text)
         if experience:
             profile["experience"] = experience
+
+        # Genuine extraction for years of experience (if mentioned)
+        yoe_match = re.search(r"(\d+(?:\.\d+)?)\+?\s*(?:years?|yrs?)\s*(?:of)?\s*experience", raw_text, re.IGNORECASE)
+        if yoe_match:
+            profile["years_of_experience"] = yoe_match.group(1)
+
+        # Genuine extraction for notice period (if mentioned)
+        notice_match = re.search(r"(?:notice\s*period|available\s*in)[:\s]*([0-9a-zA-Z\s]+?)(?:[.,;\n]|\Z)", raw_text, re.IGNORECASE)
+        if notice_match:
+            profile["notice_period"] = notice_match.group(1).strip()
+
+        # Genuine extraction for expected salary (if mentioned)
+        salary_match = re.search(r"(?:expected\s*salary|ctc\s*expectation)[:\s]*([0-9a-zA-Z\s,₹$]+?)(?:[.,;\n]|\Z)", raw_text, re.IGNORECASE)
+        if salary_match:
+            profile["expected_salary"] = salary_match.group(1).strip()
 
     except Exception as e:
         import logging

@@ -146,12 +146,13 @@ Autonomous-Internship-Agent/
 │   └── screen.png                  # Visual design render snapshot
 ├── tools/
 │   ├── __init__.py
-│   ├── apollo_scraper.py           # Fallback Apollo API / HTML scraper
 │   ├── csv_exporter.py             # CSV spreadsheet generator and file formatter
-│   ├── email_sender.py             # Gmail OAuth 2.0 and SendGrid dispatchers
+│   ├── email_sender.py             # Multi-tier email delivery (Gmail SMTP & OAuth 2.0)
+│   ├── jd_fetcher.py               # Full job description text enricher
 │   ├── jd_matcher.py               # Groq LLM JD-Resume evaluation and multi-model fallback
-│   ├── job_api.py                  # Scraper priority cascade (LinkedIn, Remotive, Himalayas)
+│   ├── job_api.py                  # Multi-source scraper cascade (Wellfound, YC, Peerlist, Internshala, etc.)
 │   ├── resume_parser.py            # PDF parsing and dynamic AI search query generator
+│   ├── semantic_matcher.py         # Embedding-based cosine similarity pre-filter
 │   └── whatsapp_handler.py         # Twilio WhatsApp notification handler
 ├── .env.example                    # Sample environment template with documentation
 ├── .gitignore                      # Git exclusion rules

@@ -3,25 +3,20 @@ tools/email_sender.py
 ---------------------
 Sends emails with CSV attachments.
 Multi-tier fallback architecture:
-  1. Gmail SMTP (App Password) - 100% reliable, never expires, no domain verification needed
-  2. SendGrid API - High volume transactional delivery
-  3. Gmail API (OAuth 2.0) - Token-based delivery
+  1. Gmail SMTP (App Password) - 100% reliable, never expires, built-in smtplib
+  2. Gmail API (OAuth 2.0) - Supports both token.json file and GMAIL_TOKEN_JSON env var
+  3. SendGrid REST API v3 - Standard HTTP requests (no dead SDK dependencies)
 """
 
 import os
+import json
 import base64
 import logging
 import smtplib
 from email.message import EmailMessage
 from typing import Optional
 
-try:
-    from sendgrid import SendGridAPIClient
-    from sendgrid.helpers.mail import (
-        Mail, Attachment, FileContent, FileName, FileType, Disposition
-    )
-except ImportError:
-    SendGridAPIClient = None
+import requests
 
 from config.settings import settings
 
@@ -36,7 +31,7 @@ def _send_via_smtp(csv_path: str, job_count: int, recipient: str, subject: str, 
     smtp_user = settings.gmail_user or settings.sender_email or settings.recipient_email
     smtp_pass = settings.gmail_app_password
 
-    if not smtp_pass or not smtp_user or smtp_user == "your-email@domain.com" or smtp_user == "noreply@internshipagent.com":
+    if not smtp_pass or not smtp_user or smtp_user in ("your-email@domain.com", "noreply@internshipagent.com"):
         return False
 
     try:
@@ -74,57 +69,16 @@ def _send_via_smtp(csv_path: str, job_count: int, recipient: str, subject: str, 
         return False
 
 
-def _send_via_sendgrid(csv_path: str, job_count: int, recipient: str, subject: str, html_content: str) -> bool:
-    """Sends email via SendGrid API."""
-    if not settings.sendgrid_api_key or not SendGridAPIClient:
-        return False
-
-    # Check if sender_email is a placeholder
-    sender = settings.sender_email
-    if not sender or sender in ["your-email@domain.com", "noreply@internshipagent.com"]:
-        logger.warning("SendGrid skipped: SENDER_EMAIL is set to a placeholder. Set a verified SendGrid sender address.")
-        return False
-
-    try:
-        logger.info("Attempting email delivery via SendGrid...")
-        message = Mail(
-            from_email=sender,
-            to_emails=recipient,
-            subject=subject,
-            html_content=html_content
-        )
-        
-        with open(csv_path, 'rb') as f:
-            data = f.read()
-            encoded_file = base64.b64encode(data).decode()
-            
-        attached_file = Attachment(
-            FileContent(encoded_file),
-            FileName(os.path.basename(csv_path)),
-            FileType('text/csv'),
-            Disposition('attachment')
-        )
-        message.attachment = attached_file
-        
-        sg = SendGridAPIClient(settings.sendgrid_api_key)
-        response = sg.send(message)
-        if response.status_code in (200, 201, 202):
-            logger.info(f"✅ SendGrid email successfully delivered to {recipient}")
-            return True
-        else:
-            logger.warning(f"SendGrid returned unexpected status: {response.status_code}")
-            return False
-    except Exception as e:
-        logger.warning(f"SendGrid delivery failed: {e}")
-        return False
-
-
 def _send_via_gmail_oauth(csv_path: str, job_count: int, recipient: str, subject: str, html_content: str) -> bool:
-    """Sends email via Google Gmail API OAuth 2.0 credentials."""
+    """
+    Sends email via Google Gmail API OAuth 2.0 credentials.
+    Supports token.json on disk or GMAIL_TOKEN_JSON environment variable (e.g. GitHub Actions / Cloud).
+    """
+    token_json_env = os.environ.get("GMAIL_TOKEN_JSON") or getattr(settings, "gmail_token_json", None)
     credentials_path = settings.gmail_credentials_file
     token_path = settings.gmail_token_file
 
-    if not os.path.exists(token_path) and not os.path.exists(credentials_path):
+    if not token_json_env and not os.path.exists(token_path) and not os.path.exists(credentials_path):
         return False
 
     try:
@@ -132,21 +86,32 @@ def _send_via_gmail_oauth(csv_path: str, job_count: int, recipient: str, subject
         from google.oauth2.credentials import Credentials
         from google.auth.transport.requests import Request
         from googleapiclient.discovery import build
-        
+
         SCOPES = ['https://www.googleapis.com/auth/gmail.send']
         creds = None
 
-        if os.path.exists(token_path):
+        # 1. First priority: Environment variable JSON string (GitHub Actions / Cloud)
+        if token_json_env:
+            try:
+                info = json.loads(token_json_env) if isinstance(token_json_env, str) else token_json_env
+                creds = Credentials.from_authorized_user_info(info, SCOPES)
+            except Exception as e:
+                logger.warning(f"Failed parsing GMAIL_TOKEN_JSON from environment: {e}")
+
+        # 2. Second priority: Local token.json file
+        if not creds and os.path.exists(token_path):
             try:
                 creds = Credentials.from_authorized_user_file(token_path, SCOPES)
             except Exception as load_err:
                 logger.warning(f"Could not load token.json: {load_err}")
 
+        # Refresh if expired
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
-                with open(token_path, 'w') as token_file:
-                    token_file.write(creds.to_json())
+                if os.path.exists(token_path):
+                    with open(token_path, 'w') as token_file:
+                        token_file.write(creds.to_json())
                 logger.info("Gmail OAuth token refreshed successfully.")
             except Exception as refresh_err:
                 logger.warning(f"Gmail OAuth token refresh failed (likely expired/revoked): {refresh_err}")
@@ -155,9 +120,9 @@ def _send_via_gmail_oauth(csv_path: str, job_count: int, recipient: str, subject
         if not creds or not creds.valid:
             logger.warning("Gmail OAuth credentials invalid or expired.")
             return False
-                
+
         service = build('gmail', 'v1', credentials=creds)
-        
+
         msg = EmailMessage()
         msg['Subject'] = subject
         msg['From'] = "me"
@@ -177,20 +142,67 @@ def _send_via_gmail_oauth(csv_path: str, job_count: int, recipient: str, subject
 
         raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode()
         body = {'raw': raw_message}
-        
+
         sent_message = service.users().messages().send(userId='me', body=body).execute()
         logger.info(f"✅ Gmail API email sent successfully to {recipient}. Message ID: {sent_message.get('id')}")
         return True
-        
+
     except Exception as e:
         logger.warning(f"Gmail API OAuth delivery failed: {e}")
+        return False
+
+
+def _send_via_sendgrid(csv_path: str, job_count: int, recipient: str, subject: str, html_content: str) -> bool:
+    """
+    Sends email via SendGrid REST API v3 using standard requests (zero dead SDK dependencies).
+    """
+    api_key = settings.sendgrid_api_key
+    if not api_key:
+        return False
+
+    sender = settings.sender_email
+    if not sender or sender in ["your-email@domain.com", "noreply@internshipagent.com"]:
+        logger.warning("SendGrid skipped: SENDER_EMAIL is set to a placeholder. Set a verified SendGrid sender address.")
+        return False
+
+    try:
+        logger.info("Attempting email delivery via SendGrid REST API v3...")
+        with open(csv_path, 'rb') as f:
+            data = f.read()
+            encoded_file = base64.b64encode(data).decode()
+
+        payload = {
+            "personalizations": [{"to": [{"email": recipient}]}],
+            "from": {"email": sender},
+            "subject": subject,
+            "content": [{"type": "text/html", "value": html_content}],
+            "attachments": [{
+                "content": encoded_file,
+                "type": "text/csv",
+                "filename": os.path.basename(csv_path),
+                "disposition": "attachment"
+            }]
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        resp = requests.post("https://api.sendgrid.com/v3/mail/send", json=payload, headers=headers, timeout=15)
+        if resp.status_code in (200, 201, 202):
+            logger.info(f"✅ SendGrid email successfully delivered to {recipient}")
+            return True
+        else:
+            logger.warning(f"SendGrid API returned status {resp.status_code}: {resp.text[:200]}")
+            return False
+    except Exception as e:
+        logger.warning(f"SendGrid delivery failed: {e}")
         return False
 
 
 def send_csv_email(csv_path: str, job_count: int) -> bool:
     """
     Sends the generated CSV report file to the configured recipient email.
-    Tries Gmail SMTP (App Password) -> SendGrid -> Gmail OAuth in priority order.
+    Tries Gmail SMTP (App Password) -> Gmail OAuth (token.json/env) -> SendGrid REST in priority order.
     """
     if not os.path.exists(csv_path):
         logger.error(f"CSV file not found for email delivery: {csv_path}")
@@ -244,12 +256,12 @@ def send_csv_email(csv_path: str, job_count: int) -> bool:
     if _send_via_smtp(csv_path, job_count, recipient, subject, html_content):
         return True
 
-    # 2. Try SendGrid API
-    if _send_via_sendgrid(csv_path, job_count, recipient, subject, html_content):
+    # 2. Try Gmail API OAuth 2.0 (token.json or GMAIL_TOKEN_JSON env)
+    if _send_via_gmail_oauth(csv_path, job_count, recipient, subject, html_content):
         return True
 
-    # 3. Try Gmail API OAuth 2.0
-    if _send_via_gmail_oauth(csv_path, job_count, recipient, subject, html_content):
+    # 3. Try SendGrid REST API
+    if _send_via_sendgrid(csv_path, job_count, recipient, subject, html_content):
         return True
 
     # Detailed setup instruction log if all fail
@@ -260,11 +272,11 @@ def send_csv_email(csv_path: str, job_count: int) -> bool:
         "   - Go to https://myaccount.google.com/apppasswords\n"
         "   - Create an app password named 'Internship Agent'\n"
         "   - Add to your .env file:\n"
-        "     GMAIL_USER=manthanr141@gmail.com\n"
+        "     GMAIL_USER=your-email@gmail.com\n"
         "     GMAIL_APP_PASSWORD=your-16-char-app-password\n"
-        "2. Option B: Configure SendGrid with a verified sender email in .env:\n"
+        "2. Option B: Configure Gmail OAuth (token.json or GMAIL_TOKEN_JSON in GitHub Secrets).\n"
+        "3. Option C: Configure SendGrid with a verified sender email in .env:\n"
         "     SENDER_EMAIL=your-verified-sender@domain.com\n"
         "     SENDGRID_API_KEY=SG.your_sendgrid_api_key\n"
     )
     return False
-
