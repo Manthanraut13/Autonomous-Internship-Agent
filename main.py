@@ -9,6 +9,27 @@ in real-time via Server-Sent Events (SSE).
 
 import os
 import sys
+import logging
+
+# Ensure stdout/stderr are flushed immediately on cloud hosts (Render/Docker)
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    datefmt="%H:%M:%S"
+)
+logger = logging.getLogger(__name__)
+
+# Ensure project root is on path
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
 import json
 import time
 import uuid
@@ -16,7 +37,6 @@ import hmac
 import base64
 import hashlib
 import secrets
-import logging
 import asyncio
 from datetime import datetime
 from typing import Dict, Any, Optional, AsyncGenerator, List, Set, Tuple
@@ -34,24 +54,6 @@ from apscheduler.triggers.cron import CronTrigger
 from config.settings import settings
 from db.database import get_db, get_db_context, init_db
 from db.models import Job, PipelineRun
-
-# Ensure project root is on path
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-if BASE_DIR not in sys.path:
-    sys.path.insert(0, BASE_DIR)
-
-logging.basicConfig(level=logging.INFO if not settings.debug else logging.DEBUG)
-logger = logging.getLogger(__name__)
-
-# Force UTF-8 output on Windows
-if sys.stdout.encoding != "utf-8":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
-
-# Initialize database tables
-init_db()
 
 # --------------------------------------------------------------------------- #
 # Security & Token Authentication (HMAC-SHA256)                               #
@@ -158,7 +160,13 @@ app = FastAPI(
 
 @app.on_event("startup")
 async def startup_event():
-    """Start background cron scheduler on application startup."""
+    """Initialise database tables and start background cron scheduler on application startup."""
+    try:
+        init_db()
+        logger.info("✅ Database tables initialized and verified.")
+    except Exception as e:
+        logger.error(f"⚠️ Database startup check warning: {e}")
+
     try:
         scheduler.add_job(
             scheduled_pipeline_execution,
@@ -937,4 +945,5 @@ async def stream_pipeline(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=settings.debug)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=settings.debug)

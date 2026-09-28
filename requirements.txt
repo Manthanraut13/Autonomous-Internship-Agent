@@ -41,7 +41,9 @@ google-api-python-client==2.118.0
 google-auth-httplib2==0.2.0
 google-auth-oauthlib==1.2.0
 
-# Semantic matching (resume embedding)
+# Semantic matching (resume embedding - CPU only for lightweight cloud deployment)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
 sentence-transformers
 numpy
 scikit-learn
