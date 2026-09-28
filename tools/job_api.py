@@ -112,67 +112,143 @@ def _is_internship_title(title: str) -> bool:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Remote Filter  [BUG-5 and BUG-6 FIXED]
+# India Location Guardrails (STRICT RULES & DISQUALIFIERS)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def is_remote_or_virtual(job: Dict[str, Any]) -> bool:
-    """
-    Returns True ONLY for explicitly remote / online / virtual / WFH positions.
+# All Indian States & Union Territories
+INDIAN_STATES = [
+    "andhra pradesh", "arunachal pradesh", "assam", "bihar", "chhattisgarh",
+    "goa", "gujarat", "haryana", "himachal pradesh", "jharkhand", "karnataka",
+    "kerala", "madhya pradesh", "maharashtra", "manipur", "meghalaya", "mizoram",
+    "nagaland", "odisha", "orissa", "punjab", "rajasthan", "sikkim", "tamil nadu",
+    "telangana", "tripura", "uttar pradesh", "uttarakhand", "uttaranchal",
+    "west bengal", "delhi", "new delhi", "ncr", "national capital region",
+    "chandigarh", "puducherry", "pondicherry", "jammu", "kashmir", "ladakh"
+]
 
-    BUG-5 fix: we no longer append "(Remote Option)" to on-site locations —
-               so on-site jobs are correctly rejected here.
-    BUG-6 fix: "hybrid" is NOT treated as remote. Hybrid means partial on-site.
+# Major Indian tech and business cities / hubs
+INDIAN_CITIES = [
+    "bengaluru", "bangalore", "hyderabad", "secunderabad", "pune", "mumbai",
+    "bombay", "gurgaon", "gurugram", "noida", "greater noida", "delhi",
+    "new delhi", "chennai", "madras", "kolkata", "calcutta", "ahmedabad",
+    "surat", "jaipur", "kochi", "cochin", "trivandrum", "thiruvananthapuram",
+    "indore", "bhopal", "chandigarh", "mohali", "panchkula", "coimbatore",
+    "nagpur", "bhubaneswar", "cuttack", "vadodara", "baroda", "visakhapatnam",
+    "vizag", "mysore", "mysuru", "patna", "lucknow", "kanpur", "ghaziabad",
+    "faridabad", "navi mumbai", "thane", "rajkot", "nashik", "aurangabad",
+    "mangalore", "mangaluru", "kozhikode", "calicut", "vijayawada", "dehradun",
+    "ranchi", "jamshedpur", "raipur", "jabalpur", "gwalior", "tiruchirappalli",
+    "trichy", "hubli", "dharwad", "belgaum", "salem", "madurai"
+]
+
+# Foreign countries and territories that must trigger immediate rejection
+FOREIGN_COUNTRIES = [
+    "united states", "usa", "u.s.a.", "u.s.", "united kingdom", "uk", "u.k.",
+    "canada", "germany", "deutschland", "france", "australia", "netherlands",
+    "singapore", "ireland", "switzerland", "sweden", "poland", "spain", "italy",
+    "japan", "china", "brazil", "mexico", "israel", "uae", "dubai", "abu dhabi",
+    "united arab emirates", "saudi arabia", "qatar", "new zealand", "philippines",
+    "south africa", "nigeria", "kenya", "egypt", "russia", "ukraine", "austria",
+    "belgium", "denmark", "finland", "norway", "portugal", "greece", "turkey",
+    "czech republic", "hungary", "romania", "vietnam", "indonesia", "malaysia",
+    "thailand", "taiwan", "south korea", "hong kong", "estonia", "latvia", "lithuania"
+]
+
+# Foreign major tech cities and states
+FOREIGN_CITIES = [
+    "san francisco", "sf", "bay area", "silicon valley", "new york", "nyc",
+    "seattle", "austin", "boston", "chicago", "los angeles", "la", "san diego",
+    "denver", "atlanta", "dallas", "houston", "california", "texas", "washington",
+    "massachusetts", "london", "manchester", "toronto", "vancouver", "montreal",
+    "waterloo", "ottawa", "berlin", "munich", "frankfurt", "paris", "amsterdam",
+    "dublin", "sydney", "melbourne", "brisbane", "tokyo", "tel aviv", "zurich",
+    "geneva", "stockholm", "warsaw", "lisbon", "barcelona", "madrid"
+]
+
+_INDIA_REGEX = re.compile(r"\b(?:india|bharat)\b", re.IGNORECASE)
+_INDIA_CODE_REGEX = re.compile(r"(?:,\s*|\/\s*|\b)in\b", re.IGNORECASE)
+
+
+def is_located_in_india(job: Dict[str, Any]) -> bool:
+    """
+    Strict guardrail ensuring job is located ONLY in India.
+    Accepts:
+      - On-site in India (e.g. Bengaluru, Pune, Hyderabad, Delhi, etc.)
+      - Hybrid in India
+      - Remote but explicitly located in India (e.g. 'Remote, India', 'India (Remote)')
+    Rejects:
+      - Any job located outside India (US, UK, Canada, Europe, Singapore, etc.)
+      - Ambiguous 'Remote', 'Worldwide', 'Global' without explicit India location.
     """
     if not job:
         return False
 
-    source = (job.get("source") or "").lower()
-    loc = (job.get("location") or "").lower()
+    loc = (job.get("location") or "").lower().strip()
     title = (job.get("title") or "").lower()
     desc = (job.get("description") or "").lower()
-    combined = f"{title} {loc} {desc}"
+    source = (job.get("source") or "").lower()
 
-    # Hard disqualifiers — explicit on-site requirement
-    strict_onsite_phrases = [
-        "strictly on-site", "strictly in-office", "must work from office",
-        "in-person only", "on-site only", "onsite only", "no remote option",
-        "no work from home", "office presence mandatory",
-        "must be based in", "must relocate",
-    ]
-    if any(phrase in combined for phrase in strict_onsite_phrases):
+    # 1. Immediate disqualification on explicit foreign country/city
+    for fc in FOREIGN_COUNTRIES:
+        pattern = r"\b" + re.escape(fc) + r"\b"
+        if re.search(pattern, loc):
+            if not _INDIA_REGEX.search(loc):
+                return False
+
+    for city in FOREIGN_CITIES:
+        pattern = r"\b" + re.escape(city) + r"\b"
+        if re.search(pattern, loc):
+            if not _INDIA_REGEX.search(loc):
+                return False
+
+    # 2. Positive India location check
+    if _INDIA_REGEX.search(loc):
+        return True
+
+    if any(re.search(r"\b" + re.escape(state) + r"\b", loc) for state in INDIAN_STATES):
+        return True
+
+    if any(re.search(r"\b" + re.escape(city) + r"\b", loc) for city in INDIAN_CITIES):
+        return True
+
+    if _INDIA_CODE_REGEX.search(loc) and any(w in loc for w in ["remote", "wfh", "work from home", "hybrid", "onsite"]):
+        return True
+
+    # 3. Platform inherent guarantee for verified Indian boards
+    if source == "internshala":
+        return True
+
+    # 4. Context check for generic remote/unspecified locations
+    if loc in ["remote", "work from home", "wfh", "anywhere", "open", ""]:
+        combined_text = f"{title} {desc[:800]}"
+        if any(re.search(r"\b" + re.escape(phrase) + r"\b", combined_text) for phrase in [
+            "in india", "india only", "located in india", "based in india", "for indian", "pan india"
+        ]):
+            return True
+        if any(re.search(r"\b" + re.escape(city) + r"\b", combined_text) for city in INDIAN_CITIES):
+            return True
         return False
-
-    # Inherently 100% remote fellowship programs
-    remote_native_sources = {"mlh", "gsoc", "outreachy"}
-    if source in remote_native_sources:
-        return True
-
-    # Strict positive remote / virtual keywords — hybrid intentionally excluded
-    remote_keywords = [
-        "remote", "online", "virtual", "work from home", "wfh",
-        "telecommute", "anywhere", "home-based", "distributed",
-        "remote-first", "remote friendly", "remote option",
-        "worldwide", "global",
-    ]
-
-    if any(k in loc for k in remote_keywords):
-        return True
-    if any(k in title for k in remote_keywords):
-        return True
-    if any(k in desc for k in remote_keywords):
-        return True
 
     return False
 
+# Backward compatibility alias
+is_remote_or_virtual = is_located_in_india
+
 
 # ---------------------------------------------------------------------------
-# 1. LinkedIn Jobs (Priority #1 — Quota: 7)
-#    BUG-5 FIXED: location no longer gets fake "(Remote Option)" appended.
-#    BUG-7: posted_at is a real datetime string from the <time> element.
+# LinkedIn Job Search (FALLBACK NODE ONLY)
+#   Invoked ONLY when the primary 25-listing quota is not fulfilled.
+#   Target: India. Keeps all options open: full-time, part-time, contract,
+#   internship, on-site, hybrid, remote in India.
 # ---------------------------------------------------------------------------
-def fetch_linkedin_jobs(search_query: str = "AI Intern", location: str = "Remote",
+def fetch_linkedin_jobs(search_query: str = "AI Engineer", location: str = "India",
                         limit: int = 10, posted_within_hours: int = 24,
                         start_offset: int = 0) -> List[Dict[str, Any]]:
+    """
+    Fetches job listings from LinkedIn Guest API targeting India.
+    Allows all work arrangements (on-site, hybrid, remote in India) and
+    all employment types (full-time, part-time, contract, internship).
+    """
     if requests is None or BeautifulSoup is None:
         return []
 
@@ -182,20 +258,18 @@ def fetch_linkedin_jobs(search_query: str = "AI Intern", location: str = "Remote
         encoded_loc = urllib.parse.quote(location)
 
         time_filter = "r86400" if posted_within_hours <= 24 else "r604800"
-        # f_JT=I → Internship job type; f_E=1 → Entry level; f_WT=2%2C3 → Remote + Hybrid
-        # We add Remote to location to maximise remote results from LinkedIn's own filter
+        # No f_WT restriction (all workplace types: onsite, hybrid, remote in India)
+        # No f_JT restriction (all job types: full-time, part-time, contract, internship)
         url = (f"{LINKEDIN_GUEST_API_URL}?keywords={encoded_query}"
-               f"&location={encoded_loc}&f_TPR={time_filter}"
-               f"&f_JT=I&f_E=1&f_WT=2&start={start_offset}")
+               f"&location={encoded_loc}&f_TPR={time_filter}&start={start_offset}")
 
         resp = requests.get(url, headers=HEADERS, timeout=12)
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, "html.parser")
             cards = soup.find_all("li")
 
-            senior_disqualifiers = [
-                "senior", "lead", "staff", "director", "principal",
-                "vp", "head of", "manager", "5+ years", "8+ years"
+            executive_disqualifiers = [
+                "director", "vp", "vice president", "head of", "chief", "principal", "10+ years", "8+ years"
             ]
 
             for card in cards:
@@ -209,14 +283,12 @@ def fetch_linkedin_jobs(search_query: str = "AI Intern", location: str = "Remote
                     title = title_el.text.strip()
                     company = comp_el.text.strip() if comp_el else "Unknown Company"
                     job_link = link_el["href"].split("?")[0]
-                    # BUG-5 FIX: use the actual location exactly as scraped
                     job_loc = loc_el.text.strip() if loc_el else location
                     posted_at_str = time_el["datetime"] if time_el and time_el.get("datetime") else ""
-                    # BUG-7: parse to datetime
                     posted_dt = _parse_iso(posted_at_str) if posted_at_str else _NOW()
 
                     title_lower = title.lower()
-                    if "intern" not in title_lower and any(disq in title_lower for disq in senior_disqualifiers):
+                    if any(disq in title_lower for disq in executive_disqualifiers):
                         continue
 
                     job_candidate = {
@@ -225,13 +297,13 @@ def fetch_linkedin_jobs(search_query: str = "AI Intern", location: str = "Remote
                         "description": f"{title} position at {company}. Location: {job_loc}.",
                         "link": job_link,
                         "apply_url": job_link,
-                        # BUG-5 FIX: no fake "(Remote Option)" label — keep exact scraped location
                         "location": job_loc,
                         "source": "linkedin",
                         "posted_at": posted_dt,
                     }
 
-                    if not is_remote_or_virtual(job_candidate):
+                    # Strict India location guardrail
+                    if not is_located_in_india(job_candidate):
                         continue
 
                     jobs.append(job_candidate)
@@ -245,80 +317,66 @@ def fetch_linkedin_jobs(search_query: str = "AI Intern", location: str = "Remote
 
 
 # ---------------------------------------------------------------------------
-# 2. Wellfound / AngelList Talent (Priority #2 — Quota: 3)
+# 1. Wellfound / AngelList Talent (Primary Platform — Startup Ecosystem)
 # ---------------------------------------------------------------------------
-def fetch_wellfound_jobs(search_query: str = "AI Intern", limit: int = 10,
+def fetch_wellfound_jobs(search_query: str = "AI Engineer", limit: int = 10,
                          posted_within_hours: int = 168) -> List[Dict[str, Any]]:
-    """Scrapes Wellfound (formerly AngelList Talent) for startup AI internships."""
+    """Scrapes Wellfound for startup AI roles located in India."""
     if requests is None or BeautifulSoup is None:
         return []
 
     jobs: List[Dict[str, Any]] = []
     try:
-        encoded_query = urllib.parse.quote(search_query)
-        url = f"https://wellfound.com/role/r/{encoded_query.lower().replace(' ', '-')}"
+        # Check India location hub directly on Wellfound
+        urls_to_try = [
+            "https://wellfound.com/location/india",
+            f"https://wellfound.com/role/r/{urllib.parse.quote(search_query.lower().replace(' ', '-'))}"
+        ]
 
-        resp = requests.get(url, headers=HEADERS, timeout=12)
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, "html.parser")
+        for url in urls_to_try:
+            if len(jobs) >= limit:
+                break
+            try:
+                resp = requests.get(url, headers=HEADERS, timeout=12)
+                if resp.status_code != 200:
+                    continue
 
-            job_cards = soup.find_all("div", class_=re.compile(r"styles_result"))
-            if not job_cards:
-                job_cards = soup.find_all("div", class_=re.compile(r"jobCard|job-card|listing"))
+                soup = BeautifulSoup(resp.text, "html.parser")
+                job_cards = soup.find_all("div", class_=re.compile(r"styles_result|jobCard|job-card|listing"))
 
-            for card in job_cards[:limit * 2]:
-                title_el = card.find(["h2", "h3", "a"], class_=re.compile(r"title|name"))
-                comp_el = card.find(["span", "a", "h4"], class_=re.compile(r"company|startup"))
-                link_el = card.find("a", href=True)
+                for card in job_cards:
+                    title_el = card.find(["h2", "h3", "a"], class_=re.compile(r"title|name"))
+                    comp_el = card.find(["span", "a", "h4"], class_=re.compile(r"company|startup"))
+                    link_el = card.find("a", href=re.compile(r"/jobs/")) or card.find("a", href=True)
+                    loc_el = card.find(["span", "div", "p"], class_=re.compile(r"location|city"))
 
-                if title_el and link_el:
-                    title = title_el.get_text(strip=True)
-                    company = comp_el.get_text(strip=True) if comp_el else "Startup"
-                    href = link_el["href"]
-                    if not href.startswith("http"):
-                        href = f"https://wellfound.com{href}"
+                    if title_el and link_el:
+                        title = title_el.get_text(strip=True)
+                        company = comp_el.get_text(strip=True) if comp_el else "Wellfound Startup"
+                        href = link_el["href"]
+                        if not href.startswith("http"):
+                            href = f"https://wellfound.com{href}"
 
-                    desc_el = card.find(["p", "div"], class_=re.compile(r"desc|detail|snippet"))
-                    desc = desc_el.get_text(strip=True) if desc_el else f"{title} at {company}. Apply to work at an early-stage startup."
+                        loc = loc_el.get_text(strip=True) if loc_el else "India"
+                        desc_el = card.find(["p", "div"], class_=re.compile(r"desc|detail|snippet"))
+                        desc = desc_el.get_text(strip=True) if desc_el else f"{title} at {company}. Location: {loc}."
 
-                    jobs.append({
-                        "title": title,
-                        "company": company,
-                        "description": desc[:1500],
-                        "link": href,
-                        "apply_url": href,
-                        "location": "Remote",
-                        "source": "wellfound",
-                        "posted_at": _NOW(),
-                    })
-
-                if len(jobs) >= limit:
-                    break
-
-        # Fallback: try AI engineer listing directly
-        if not jobs:
-            api_url = "https://wellfound.com/role/r/ai-engineer"
-            resp2 = requests.get(api_url, headers=HEADERS, timeout=12)
-            if resp2.status_code == 200:
-                soup2 = BeautifulSoup(resp2.text, "html.parser")
-                for link_tag in soup2.find_all("a", href=re.compile(r"/jobs/")):
-                    title = link_tag.get_text(strip=True)
-                    href = link_tag["href"]
-                    if not href.startswith("http"):
-                        href = f"https://wellfound.com{href}"
-                    if title and len(title) > 5:
-                        jobs.append({
+                        job_obj = {
                             "title": title,
-                            "company": "Wellfound Startup",
-                            "description": f"{title}. Startup opportunity via Wellfound.",
+                            "company": company,
+                            "description": desc[:1500],
                             "link": href,
                             "apply_url": href,
-                            "location": "Remote",
+                            "location": loc,
                             "source": "wellfound",
                             "posted_at": _NOW(),
-                        })
-                    if len(jobs) >= limit:
-                        break
+                        }
+                        if is_located_in_india(job_obj):
+                            jobs.append(job_obj)
+                            if len(jobs) >= limit:
+                                break
+            except Exception as e:
+                logger.debug(f"Wellfound URL error ({url}): {e}")
 
     except Exception as e:
         logger.warning(f"Error fetching Wellfound jobs: {e}")
@@ -327,25 +385,18 @@ def fetch_wellfound_jobs(search_query: str = "AI Intern", limit: int = 10,
 
 
 # ---------------------------------------------------------------------------
-# 3. Y Combinator — Workatastartup JSON API  [BUG-1 FIXED]
-#    Old code: requests.get to a React SPA → always returned 0 jobs.
-#    Fix: call the actual JSON search endpoint that powers the page.
+# 2. Y Combinator — Workatastartup JSON API
 # ---------------------------------------------------------------------------
-def fetch_yc_jobs(search_query: str = "AI Intern", limit: int = 10,
+def fetch_yc_jobs(search_query: str = "AI Engineer", limit: int = 10,
                   posted_within_hours: int = 168) -> List[Dict[str, Any]]:
     """
-    Queries Workatastartup.com via its internal JSON search API.
-    This is the same endpoint the browser calls; no JavaScript execution needed.
+    Queries Workatastartup.com via its search API for AI openings in India.
     """
     if requests is None:
         return []
 
     jobs: List[Dict[str, Any]] = []
     try:
-        # Attempt 1: the /jobs API endpoint (returns JSON if site exposes it)
-        # Workatastartup.com loads its data via Algolia. We try the company search
-        # endpoint which is server-side and returns some JSON metadata.
-        # If it returns HTML (React shell), we fall through to GitHub fallback.
         url = "https://www.workatastartup.com/jobs"
         params = {
             "companySize": "any",
@@ -354,9 +405,7 @@ def fetch_yc_jobs(search_query: str = "AI Intern", limit: int = 10,
             "hasSalary": "false",
             "industry": "any",
             "interviewProcess": "any",
-            "jobType": "intern",
             "query": search_query,
-            "remote": "true",
             "sortBy": "created_at",
         }
         resp = requests.get(url, headers=JSON_HEADERS, params=params, timeout=15)
@@ -365,7 +414,7 @@ def fetch_yc_jobs(search_query: str = "AI Intern", limit: int = 10,
         if resp.status_code == 200 and "application/json" in content_type:
             data = resp.json()
             job_list = data if isinstance(data, list) else data.get("jobs", data.get("results", []))
-            for item in job_list[:limit * 2]:
+            for item in job_list[:limit * 3]:
                 if not isinstance(item, dict):
                     continue
                 title = item.get("title") or item.get("job_title") or ""
@@ -377,128 +426,43 @@ def fetch_yc_jobs(search_query: str = "AI Intern", limit: int = 10,
                     link = f"https://www.workatastartup.com{link}"
                 if not title or not link:
                     continue
+                loc = str(item.get("location") or "India")
                 job_obj = {
                     "title": title,
                     "company": company_name,
                     "description": _clean_html(desc)[:1500],
                     "link": link,
                     "apply_url": link,
-                    "location": "Remote",
+                    "location": loc,
                     "source": "yc",
                     "posted_at": _NOW(),
                 }
-                if is_remote_or_virtual(job_obj):
+                if is_located_in_india(job_obj):
                     jobs.append(job_obj)
                 if len(jobs) >= limit:
                     break
 
-        # Fallback: Jobicy remote jobs API — fully public JSON, no auth
-        # Jobicy is a legitimate remote-only job board with a free public API
-        if not jobs:
-            try:
-                jobicy_url = "https://jobicy.com/api/v2/remote-jobs"
-                jobicy_params = {
-                    "count": min(limit * 3, 20),
-                    "geo": "worldwide",
-                    "industry": "engineering",
-                    "tag": "ai",
-                }
-                r2 = requests.get(jobicy_url, headers=JSON_HEADERS, params=jobicy_params, timeout=12)
-                if r2.status_code == 200:
-                    j_data = r2.json()
-                    for item in j_data.get("jobs", [])[:limit * 2]:
-                        title = item.get("jobTitle", "")
-                        title_lower = title.lower()
-                        if not any(kw in title_lower for kw in ["intern", "internship"]):
-                            continue
-                        company = item.get("companyName", "Company")
-                        desc = item.get("jobDescription", f"{title} at {company}.")
-                        link = item.get("url") or item.get("jobUrl") or ""
-                        if not link:
-                            continue
-                        posted_raw = item.get("pubDate", "")
-                        posted_dt = _parse_iso(posted_raw) if posted_raw else _NOW()
-                        loc = item.get("jobGeo", "Remote")
-                        job_obj = {
-                            "title": title,
-                            "company": company,
-                            "description": _clean_html(str(desc))[:1500],
-                            "link": link,
-                            "apply_url": link,
-                            "location": loc,
-                            "source": "yc",
-                            "posted_at": posted_dt,
-                        }
-                        if is_remote_or_virtual(job_obj):
-                            jobs.append(job_obj)
-                        if len(jobs) >= limit:
-                            break
-            except Exception as je:
-                logger.debug(f"Jobicy fallback error: {je}")
-
-        # Fallback 2: Remotive public API — no auth needed, returns JSON
-        if not jobs:
-            try:
-                remotive_url = "https://remotive.com/api/remote-jobs"
-                r3 = requests.get(
-                    remotive_url,
-                    headers=JSON_HEADERS,
-                    params={"category": "software-dev", "search": search_query, "limit": limit * 3},
-                    timeout=12
-                )
-                if r3.status_code == 200:
-                    rdata = r3.json()
-                    for item in rdata.get("jobs", []):
-                        title = item.get("title", "")
-                        title_lower = title.lower()
-                        if not any(kw in title_lower for kw in ["intern", "internship", "co-op"]):
-                            continue
-                        company = item.get("company_name", "Company")
-                        desc = item.get("description", f"{title} at {company}.")
-                        link = item.get("url", "")
-                        if not link:
-                            continue
-                        posted_raw = item.get("publication_date", "")
-                        posted_dt = _parse_iso(posted_raw) if posted_raw else _NOW()
-                        job_obj = {
-                            "title": title,
-                            "company": company,
-                            "description": _clean_html(str(desc))[:1500],
-                            "link": link,
-                            "apply_url": link,
-                            "location": "Remote",
-                            "source": "yc",
-                            "posted_at": posted_dt,
-                        }
-                        jobs.append(job_obj)
-                        if len(jobs) >= limit:
-                            break
-            except Exception as re_err:
-                logger.debug(f"Remotive fallback error: {re_err}")
-
     except Exception as e:
-        logger.warning(f"Error fetching YC/remote jobs: {e}")
+        logger.warning(f"Error fetching YC jobs: {e}")
 
     return jobs[:limit]
 
 
 # ---------------------------------------------------------------------------
-# 4. Internshala + Adzuna  [BUG-2 FIXED — replaces broken Peerlist SPA]
-#    Peerlist is a Next.js SPA that returns an empty shell to raw GET requests.
-#    Internshala is server-side rendered. Adzuna has a proper JSON REST API.
+# 3. Internshala + Adzuna (Primary Platform — India Tech Internships & Jobs)
 # ---------------------------------------------------------------------------
-def fetch_internshala_jobs(search_query: str = "AI Intern", limit: int = 10,
+def fetch_internshala_jobs(search_query: str = "AI Engineer", limit: int = 10,
                            posted_within_hours: int = 168) -> List[Dict[str, Any]]:
     """
-    Scrapes Internshala remote internships (server-side rendered — works with requests).
-    Falls back to Adzuna API if Adzuna credentials are configured.
+    Scrapes Internshala for AI/ML/Data internships and full-time jobs across India.
+    Falls back to Adzuna India API if Adzuna credentials are configured.
     """
     if requests is None or BeautifulSoup is None:
         return []
 
     jobs: List[Dict[str, Any]] = []
 
-    # ── Path A: Adzuna API (preferred — structured JSON) ──────────────────
+    # ── Path A: Adzuna India API (if credentials configured) ─────────────
     adzuna_app_id = getattr(settings, "adzuna_app_id", "") or ""
     adzuna_api_key = getattr(settings, "adzuna_api_key", "") or ""
     if adzuna_app_id and adzuna_api_key:
@@ -508,8 +472,7 @@ def fetch_internshala_jobs(search_query: str = "AI Intern", limit: int = 10,
                 f"https://api.adzuna.com/v1/api/jobs/in/search/1"
                 f"?app_id={adzuna_app_id}&app_key={adzuna_api_key}"
                 f"&results_per_page={min(limit * 2, 20)}&what={keywords}"
-                f"&what_exclude=senior+lead+manager&title_only=intern"
-                f"&full_time=0&part_time=0"
+                f"&what_exclude=director+vp+manager"
             )
             resp = requests.get(url, headers=JSON_HEADERS, timeout=15)
             if resp.status_code == 200:
@@ -534,130 +497,116 @@ def fetch_internshala_jobs(search_query: str = "AI Intern", limit: int = 10,
                         "source": "internshala",
                         "posted_at": posted_dt,
                     }
-                    if is_remote_or_virtual(job_obj):
+                    if is_located_in_india(job_obj):
                         jobs.append(job_obj)
                     if len(jobs) >= limit:
                         return jobs[:limit]
         except Exception as e:
             logger.warning(f"Adzuna API error: {e}")
 
-    # ── Path B: Internshala scraper ────────────────────────────────────────
+    # ── Path B: Internshala Scraper (India AI Internships & Jobs) ────────
     if not jobs:
         try:
-            # DIAGNOSTIC CONFIRMED: data-internship-id does NOT exist on current Internshala HTML.
-            # BUT: there are 50 /internship/detail/ links on every page.
-            # Strategy: use the confirmed-working work-from-home URL, scrape all detail links,
-            # then filter by AI-related keywords in the title.
             slug = urllib.parse.quote(search_query.lower().replace(" ", "-"))
+            urls_to_try = [
+                "https://internshala.com/internships/artificial-intelligence-ai-internship/",
+                "https://internshala.com/internships/machine-learning-internship/",
+                "https://internshala.com/jobs/artificial-intelligence-ai-jobs/",
+                "https://internshala.com/jobs/machine-learning-jobs/",
+                f"https://internshala.com/internships/keywords-{slug}/",
+                f"https://internshala.com/jobs/keywords-{slug}/",
+            ]
+
             ai_title_keywords = [
                 "ai", "ml", "machine learning", "deep learning", "data science",
                 "data analyst", "python", "nlp", "llm", "artificial intelligence",
-                "computer vision", "automation", "software", "web", "app",
-                "developer", "engineer", "technology", "tech",
+                "computer vision", "automation", "software", "developer", "engineer"
             ]
-            urls_to_try = [
-                f"https://internshala.com/internships/keywords-{slug}/work-from-home-jobs/",
-                f"https://internshala.com/internships/work-from-home-{slug}-internship/",
-                "https://internshala.com/internships/work-from-home-internship/",
-            ]
-            soup = None
+
+            seen_links = set()
             for try_url in urls_to_try:
+                if len(jobs) >= limit:
+                    break
                 try:
-                    resp = requests.get(try_url, headers=HEADERS, timeout=15)
-                    if resp.status_code == 200:
-                        soup = BeautifulSoup(resp.text, "html.parser")
-                        # Confirm we got actual listing links
-                        test_links = soup.find_all("a", href=re.compile(r"/internship/detail/"))
-                        if test_links:
-                            break
-                except Exception:
-                    continue
-
-            if soup:
-                # Extract all detail links — guaranteed to be there (50 per page confirmed)
-                detail_links = soup.find_all("a", href=re.compile(r"/internship/detail/"))
-                seen_hrefs = set()
-                for a_tag in detail_links:
-                    title = a_tag.get_text(strip=True)
-                    if not title or len(title) < 4:
+                    resp = requests.get(try_url, headers=HEADERS, timeout=12)
+                    if resp.status_code != 200:
                         continue
-                    href = a_tag.get("href", "")
-                    if not href:
-                        continue
-                    if not href.startswith("http"):
-                        href = f"https://internshala.com{href}"
-                    if href in seen_hrefs:
-                        continue
-                    seen_hrefs.add(href)
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    cards = soup.find_all("div", class_=re.compile(r"individual_internship|job-card"))
 
-                    # Filter by AI/tech relevance — since WFH board has all categories
-                    title_lower = title.lower()
-                    if not any(kw in title_lower for kw in ai_title_keywords):
-                        continue
+                    for card in cards:
+                        link_el = card.find("a", href=re.compile(r"/(?:internship|job)/detail/"))
+                        if not link_el:
+                            continue
+                        title = link_el.get_text(strip=True)
+                        href = link_el.get("href", "")
+                        if not href:
+                            continue
+                        if not href.startswith("http"):
+                            href = f"https://internshala.com{href}"
+                        if href in seen_links:
+                            continue
+                        seen_links.add(href)
 
-                    # Try to get company from the parent element
-                    parent = a_tag.parent
-                    company = "Company on Internshala"
-                    if parent:
-                        # Internshala typically has company name near the title link
-                        comp_el = parent.find_next(
-                            lambda t: t.name in ["a", "span", "p"] and
-                            t.get("href", "").find("/company/") >= 0
-                        )
-                        if comp_el:
-                            company = comp_el.get_text(strip=True)
+                        title_lower = title.lower()
+                        if not any(kw in title_lower for kw in ai_title_keywords):
+                            continue
 
-                    jobs.append({
-                        "title": title,
-                        "company": company,
-                        "description": f"{title} remote internship at {company}. Work from home. Listed on Internshala.",
-                        "link": href,
-                        "apply_url": href,
-                        "location": "Work From Home",
-                        "source": "internshala",
-                        "posted_at": _NOW(),
-                    })
-                    if len(jobs) >= limit:
-                        break
+                        comp_el = card.find(class_=re.compile(r"company_name|link_display_like_text"))
+                        comp_raw = comp_el.get_text(strip=True) if comp_el else "Company on Internshala"
+                        comp = re.sub(r"actively hiring", "", comp_raw, flags=re.I).strip()
+
+                        loc_el = card.find(id=re.compile(r"location")) or card.find(class_=re.compile(r"location"))
+                        loc = loc_el.get_text(strip=True) if loc_el else "India"
+
+                        job_obj = {
+                            "title": title,
+                            "company": comp,
+                            "description": f"{title} position at {comp}. Location: {loc}. Listed on Internshala India.",
+                            "link": href,
+                            "apply_url": href,
+                            "location": loc,
+                            "source": "internshala",
+                            "posted_at": _NOW(),
+                        }
+                        if is_located_in_india(job_obj):
+                            jobs.append(job_obj)
+                            if len(jobs) >= limit:
+                                break
+                except Exception as e:
+                    logger.debug(f"Internshala URL error ({try_url}): {e}")
+
         except Exception as e:
             logger.warning(f"Internshala scraper error: {e}")
-
 
     return jobs[:limit]
 
 
 # ---------------------------------------------------------------------------
-# 5. Greenhouse.io Boards API  [BUG-3 FIXED — replaces broken Otta scraper]
-#    Otta is Cloudflare-protected and requires auth. Greenhouse is public JSON.
-#    We query a curated list of AI-focused companies using Greenhouse ATS.
+# 4. Greenhouse.io Boards API (Tech Startups with India Presence)
 # ---------------------------------------------------------------------------
 
-# AI-focused startups/companies known to use Greenhouse.io
 GREENHOUSE_COMPANIES = [
+    "posthog", "browserstack", "hasura", "razorpay", "cred",
+    "zerodha", "groww", "swiggy", "zomato", "curefit",
     "openai", "anthropic", "cohere", "scale-ai", "huggingface",
-    "mistral-ai", "together-ai", "perplexity-ai", "replit",
-    "notion", "linear", "figma", "vercel", "supabase",
-    "deepmind", "stability-ai", "runway", "descript", "eleven-labs",
-    "synthesia", "character-ai", "inflection-ai", "adept", "imbue",
-    "modal-labs", "weaviate", "pinecone", "qdrant", "chroma",
+    "together-ai", "perplexity-ai", "replit", "linear",
+    "vercel", "supabase", "weaviate", "pinecone", "qdrant"
 ]
 
 
-def fetch_greenhouse_jobs(search_query: str = "AI Intern", limit: int = 10,
+def fetch_greenhouse_jobs(search_query: str = "AI Engineer", limit: int = 10,
                           posted_within_hours: int = 168) -> List[Dict[str, Any]]:
     """
-    Queries the public Greenhouse.io job board API for multiple AI companies.
-    Greenhouse provides a fully public, unauthenticated JSON API per company:
-      GET https://boards-api.greenhouse.io/v1/boards/{company}/jobs?content=true
+    Queries public Greenhouse.io job board API and strictly filters for India positions.
     """
     if requests is None:
         return []
 
     jobs: List[Dict[str, Any]] = []
     q_terms = [t.strip().lower() for t in search_query.split() if t.strip()]
-    internship_signals = ["intern", "internship", "co-op", "coop", "trainee"]
     ai_signals = ["ai", "ml", "machine learning", "nlp", "llm", "deep learning",
-                  "data scientist", "research", "model", "language"]
+                  "data scientist", "research", "model", "python", "automation"]
 
     cutoff = _NOW() - timedelta(hours=posted_within_hours)
 
@@ -678,27 +627,24 @@ def fetch_greenhouse_jobs(search_query: str = "AI Intern", limit: int = 10,
                 title_lower = title.lower()
                 desc_raw = item.get("content", "") or ""
                 desc = _clean_html(desc_raw)[:1500]
-                combined = f"{title_lower} {desc[:300].lower()}"
-
-                # CRITICAL FIX: Use word-boundary regex, NOT substring 'in'.
-                # 'intern' in 'international' is True — that's a Python substring match.
-                # _is_internship_title() uses \b word boundary so only real internship
-                # keywords (intern, internship, co-op, trainee, fellow) match.
-                if not _is_internship_title(title):
-                    continue
-
-                # Must be AI-relevant (check title + first 300 chars of desc)
                 combined_ai = f"{title_lower} {desc[:300].lower()}"
 
                 if q_terms and not any(t in combined_ai for t in q_terms):
                     if not any(k in combined_ai for k in ai_signals):
                         continue
+
                 location = item.get("location", {}).get("name", "") or ""
-                job_obj_temp = {"location": location, "description": desc, "title": title, "source": "greenhouse"}
-                if not is_remote_or_virtual(job_obj_temp):
+                job_obj_temp = {
+                    "location": location,
+                    "description": desc,
+                    "title": title,
+                    "source": "greenhouse"
+                }
+
+                # Strict India location guardrail
+                if not is_located_in_india(job_obj_temp):
                     continue
 
-                # Date check
                 posted_raw = item.get("updated_at") or item.get("created_at") or ""
                 posted_dt = _parse_iso(posted_raw) if posted_raw else _NOW()
                 if posted_dt and posted_dt < cutoff:
@@ -711,10 +657,10 @@ def fetch_greenhouse_jobs(search_query: str = "AI Intern", limit: int = 10,
                 jobs.append({
                     "title": title,
                     "company": company_slug.replace("-", " ").title(),
-                    "description": desc if desc else f"{title} internship at {company_slug}.",
+                    "description": desc if desc else f"{title} position at {company_slug}.",
                     "link": link,
                     "apply_url": link,
-                    "location": location if location else "Remote",
+                    "location": location if location else "India",
                     "source": "greenhouse",
                     "posted_at": posted_dt,
                 })
@@ -726,11 +672,11 @@ def fetch_greenhouse_jobs(search_query: str = "AI Intern", limit: int = 10,
 
 
 # ---------------------------------------------------------------------------
-# 6. SimplifyJobs GitHub Tracker (Priority #6 — Quota: 3)
+# 5. SimplifyJobs GitHub Tracker (Filtered for India)
 # ---------------------------------------------------------------------------
-def fetch_simplifyjobs_github(search_query: str = "AI Intern", limit: int = 10,
+def fetch_simplifyjobs_github(search_query: str = "AI Engineer", limit: int = 10,
                                posted_within_hours: int = 168) -> List[Dict[str, Any]]:
-    """Parses the SimplifyJobs GitHub Markdown table for real-time internship postings."""
+    """Parses SimplifyJobs GitHub Markdown table and filters strictly for India."""
     if requests is None or BeautifulSoup is None:
         return []
 
@@ -758,9 +704,8 @@ def fetch_simplifyjobs_github(search_query: str = "AI Intern", limit: int = 10,
                 company = last_company or "Tech Company"
 
                 title = tds[1].get_text(strip=True)
-                location = tds[2].get_text(strip=True) if len(tds) > 2 else "Remote"
+                location = tds[2].get_text(strip=True) if len(tds) > 2 else ""
 
-                # Find apply link
                 href = ""
                 for a in tr.find_all("a", href=True):
                     h = a["href"]
@@ -787,19 +732,16 @@ def fetch_simplifyjobs_github(search_query: str = "AI Intern", limit: int = 10,
                     continue
 
                 job_obj = {
-                    "title": title if title else f"Intern at {company}",
+                    "title": title if title else f"Position at {company}",
                     "company": company,
-                    "description": (
-                        f"{title} at {company}. Location: {location}. "
-                        "Verified tech internship tracked by SimplifyJobs GitHub."
-                    ),
+                    "description": f"{title} at {company}. Location: {location}.",
                     "link": href,
                     "apply_url": href,
-                    "location": location if location else "Remote",
+                    "location": location,
                     "source": "simplifyjobs",
                     "posted_at": _NOW(),
                 }
-                if is_remote_or_virtual(job_obj):
+                if is_located_in_india(job_obj):
                     jobs.append(job_obj)
                     if len(jobs) >= limit:
                         break
@@ -811,16 +753,11 @@ def fetch_simplifyjobs_github(search_query: str = "AI Intern", limit: int = 10,
 
 
 # ---------------------------------------------------------------------------
-# 7. Pittcsc Summer 2026 GitHub Tracker  [BUG-4 FIXED — replaces Levels.fyi]
-#    Levels.fyi uses client-side JS rendering; table is never in the raw HTML.
-#    Pittcsc/Summer2026-Internships README has the same data in plain Markdown.
+# 6. Pittcsc Summer Internships (Filtered for India)
 # ---------------------------------------------------------------------------
-def fetch_pittcsc_github(search_query: str = "AI Intern", limit: int = 10,
+def fetch_pittcsc_github(search_query: str = "AI Engineer", limit: int = 10,
                          posted_within_hours: int = 168) -> List[Dict[str, Any]]:
-    """
-    Parses the pittcsc/Summer2026-Internships GitHub README Markdown table.
-    Columns: Company | Role | Location | Application/Link | Date Posted
-    """
+    """Parses pittcsc GitHub Markdown table and filters strictly for India."""
     if requests is None or BeautifulSoup is None:
         return []
 
@@ -847,12 +784,11 @@ def fetch_pittcsc_github(search_query: str = "AI Intern", limit: int = 10,
                     last_company = raw_comp
                 company = last_company or "Tech Company"
 
-                title = tds[1].get_text(strip=True) if len(tds) > 1 else "Software Intern"
-                location = tds[2].get_text(strip=True) if len(tds) > 2 else "Remote"
+                title = tds[1].get_text(strip=True) if len(tds) > 1 else "Software Engineer"
+                location = tds[2].get_text(strip=True) if len(tds) > 2 else ""
                 date_str = tds[4].get_text(strip=True) if len(tds) > 4 else ""
                 posted_dt = _parse_iso(date_str) if date_str else _NOW()
 
-                # Find apply link
                 href = ""
                 for a in tr.find_all("a", href=True):
                     h = a["href"]
@@ -874,17 +810,14 @@ def fetch_pittcsc_github(search_query: str = "AI Intern", limit: int = 10,
                 job_obj = {
                     "title": title,
                     "company": company,
-                    "description": (
-                        f"{title} at {company}. Location: {location}. "
-                        "Internship tracked by pittcsc/Summer2026-Internships."
-                    ),
+                    "description": f"{title} at {company}. Location: {location}.",
                     "link": href,
                     "apply_url": href,
                     "location": location,
                     "source": "pittcsc",
                     "posted_at": posted_dt,
                 }
-                if is_remote_or_virtual(job_obj):
+                if is_located_in_india(job_obj):
                     jobs.append(job_obj)
                     if len(jobs) >= limit:
                         break
@@ -896,173 +829,32 @@ def fetch_pittcsc_github(search_query: str = "AI Intern", limit: int = 10,
 
 
 # ---------------------------------------------------------------------------
-# 8. MLH Fellowship (Priority #8 — Quota: 0-1)
-#    BUG-12 FIXED: Only emits an entry when the page confirms applications are
-#    currently open. Returns empty list otherwise — cascades quota to next platform.
-# ---------------------------------------------------------------------------
-def fetch_mlh_fellowship(search_query: str = "AI", limit: int = 5,
-                         posted_within_hours: int = 720) -> List[Dict[str, Any]]:
-    """
-    Returns 1 entry ONLY when MLH Fellowship applications are currently open.
-    Returns empty list otherwise — quota cascades to next platform.
-    """
-    if requests is None or BeautifulSoup is None:
-        return []
-
-    try:
-        url = "https://fellowship.mlh.io"
-        resp = requests.get(url, headers=HEADERS, timeout=12)
-        if resp.status_code != 200:
-            return []
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-        text = soup.get_text().lower()
-
-        # These are STRONG signals of an active application window
-        strong_open_signals = ["apply now", "applications open", "accepting applications", "applications are open"]
-        if not any(kw in text for kw in strong_open_signals):
-            logger.info("MLH Fellowship: No active application window detected. Skipping.")
-            return []
-
-        return [{
-            "title": "MLH Fellowship — Software Engineering / Open Source",
-            "company": "Major League Hacking",
-            "description": (
-                "12-week remote software engineering fellowship. "
-                "Work on open-source projects with production-grade codebases. "
-                "Compensated educational stipend. Backed by major tech firms. "
-                "Requires AI/ML, Python, or open-source contribution skills."
-            ),
-            "link": "https://fellowship.mlh.io",
-            "apply_url": "https://fellowship.mlh.io",
-            "location": "Remote (Global)",
-            "source": "mlh",
-            "posted_at": _NOW(),
-        }]
-
-    except Exception as e:
-        logger.warning(f"Error fetching MLH Fellowship: {e}")
-    return []
-
-
-# ---------------------------------------------------------------------------
-# 9. Google Summer of Code (Priority #9 — Quota: 0-1)
-#    BUG-12 FIXED: Conditional on detected open application window.
-# ---------------------------------------------------------------------------
-def fetch_gsoc_projects(search_query: str = "AI", limit: int = 5,
-                        posted_within_hours: int = 720) -> List[Dict[str, Any]]:
-    """Returns 1 entry ONLY when GSoC contributor applications are open."""
-    if requests is None or BeautifulSoup is None:
-        return []
-
-    try:
-        url = "https://summerofcode.withgoogle.com"
-        resp = requests.get(url, headers=HEADERS, timeout=12)
-        if resp.status_code != 200:
-            return []
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-        text = soup.get_text().lower()
-
-        strong_open_signals = ["contributor application", "applications open", "apply now", "application period"]
-        if not any(kw in text for kw in strong_open_signals):
-            logger.info("GSoC: No active contributor application window detected. Skipping.")
-            return []
-
-        return [{
-            "title": "Google Summer of Code — Open Source Contributor",
-            "company": "Google",
-            "description": (
-                "Global, paid open-source internship program. "
-                "Pairs contributors with production-grade AI/ML, cloud, and systems projects. "
-                "Stipend provided. Strong alignment with AI, LLM, and Python skills."
-            ),
-            "link": "https://summerofcode.withgoogle.com",
-            "apply_url": "https://summerofcode.withgoogle.com",
-            "location": "Remote (Global)",
-            "source": "gsoc",
-            "posted_at": _NOW(),
-        }]
-
-    except Exception as e:
-        logger.warning(f"Error fetching GSoC: {e}")
-    return []
-
-
-# ---------------------------------------------------------------------------
-# 10. Outreachy (Priority #10 — Quota: 0-1)
-#     BUG-12 FIXED: Conditional on detected open initial application window.
-# ---------------------------------------------------------------------------
-def fetch_outreachy_internships(search_query: str = "AI", limit: int = 5,
-                                posted_within_hours: int = 720) -> List[Dict[str, Any]]:
-    """Returns 1 entry ONLY when Outreachy initial applications are open."""
-    if requests is None or BeautifulSoup is None:
-        return []
-
-    try:
-        url = "https://www.outreachy.org"
-        resp = requests.get(url, headers=HEADERS, timeout=12)
-        if resp.status_code != 200:
-            return []
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-        text = soup.get_text().lower()
-
-        strong_open_signals = ["initial applications open", "applications are open", "apply to outreachy"]
-        if not any(kw in text for kw in strong_open_signals):
-            logger.info("Outreachy: No active application window detected. Skipping.")
-            return []
-
-        return [{
-            "title": "Outreachy — Remote Open Source Internship ($7,000 USD stipend)",
-            "company": "Outreachy / Software Freedom Conservancy",
-            "description": (
-                "Fully remote, paid 3-month open-source internships ($7,000 USD stipend). "
-                "Focused on open-source software, data tools, AI/ML libraries, and infrastructure. "
-                "Mentored internship with experienced open-source maintainers."
-            ),
-            "link": "https://www.outreachy.org",
-            "apply_url": "https://www.outreachy.org",
-            "location": "Remote (Global)",
-            "source": "outreachy",
-            "posted_at": _NOW(),
-        }]
-
-    except Exception as e:
-        logger.warning(f"Error fetching Outreachy: {e}")
-    return []
-
-
-# ---------------------------------------------------------------------------
-# Platform Registry & Quota Distribution
-#   Revised quotas after replacing 4 broken scrapers with working ones.
-#   MLH/GSoC/Outreachy are 0-1 (conditional) — their quota cascades.
+# Platform Registry & Quota Distribution (PRIMARY PORTALS ONLY)
+#   LinkedIn is strictly excluded here and reserved for the FALLBACK NODE.
+#   Total Primary Target = 25 qualified openings.
 # ---------------------------------------------------------------------------
 
 PLATFORM_QUOTAS = {
-    "linkedin":      7,
-    "wellfound":     3,
-    "yc":            3,
-    "internshala":   3,
+    "internshala":   10,
+    "wellfound":     5,
+    "yc":            4,
     "greenhouse":    3,
-    "simplifyjobs":  3,
-    "pittcsc":       2,
-    "mlh":           1,
-    "gsoc":          1,
-    "outreachy":     1,
+    "simplifyjobs":  2,
+    "pittcsc":       1,
 }
 
 
 def get_scraper_platforms() -> List[Dict[str, Any]]:
-    """Returns the ordered list of scrapers with quota allocation."""
+    """
+    Returns the ordered list of PRIMARY scrapers (non-LinkedIn).
+    LinkedIn is reserved exclusively for the Fallback Node.
+    """
     return [
         {
-            "name": "LinkedIn",
-            "source": "linkedin",
-            "quota": PLATFORM_QUOTAS["linkedin"],
-            "fn": lambda q, lim, hrs, off: fetch_linkedin_jobs(
-                f"{q} startup", limit=lim, posted_within_hours=hrs, start_offset=off
-            )
+            "name": "Internshala (India)",
+            "source": "internshala",
+            "quota": PLATFORM_QUOTAS["internshala"],
+            "fn": lambda q, lim, hrs, off: fetch_internshala_jobs(q, limit=lim, posted_within_hours=hrs)
         },
         {
             "name": "Wellfound (AngelList)",
@@ -1077,56 +869,32 @@ def get_scraper_platforms() -> List[Dict[str, Any]]:
             "fn": lambda q, lim, hrs, off: fetch_yc_jobs(q, limit=lim, posted_within_hours=hrs)
         },
         {
-            "name": "Internshala / Adzuna",
-            "source": "internshala",
-            "quota": PLATFORM_QUOTAS["internshala"],
-            "fn": lambda q, lim, hrs, off: fetch_internshala_jobs(q, limit=lim, posted_within_hours=hrs)
-        },
-        {
-            "name": "Greenhouse.io Boards",
+            "name": "Greenhouse.io Boards (India)",
             "source": "greenhouse",
             "quota": PLATFORM_QUOTAS["greenhouse"],
             "fn": lambda q, lim, hrs, off: fetch_greenhouse_jobs(q, limit=lim, posted_within_hours=hrs)
         },
         {
-            "name": "SimplifyJobs GitHub",
+            "name": "SimplifyJobs Tracker (India)",
             "source": "simplifyjobs",
             "quota": PLATFORM_QUOTAS["simplifyjobs"],
             "fn": lambda q, lim, hrs, off: fetch_simplifyjobs_github(q, limit=lim, posted_within_hours=hrs)
         },
         {
-            "name": "Pittcsc Summer Internships",
+            "name": "Pittcsc Tracker (India)",
             "source": "pittcsc",
             "quota": PLATFORM_QUOTAS["pittcsc"],
             "fn": lambda q, lim, hrs, off: fetch_pittcsc_github(q, limit=lim, posted_within_hours=hrs)
         },
-        {
-            "name": "MLH Fellowship",
-            "source": "mlh",
-            "quota": PLATFORM_QUOTAS["mlh"],
-            "fn": lambda q, lim, hrs, off: fetch_mlh_fellowship(q, limit=lim, posted_within_hours=hrs)
-        },
-        {
-            "name": "Google Summer of Code",
-            "source": "gsoc",
-            "quota": PLATFORM_QUOTAS["gsoc"],
-            "fn": lambda q, lim, hrs, off: fetch_gsoc_projects(q, limit=lim, posted_within_hours=hrs)
-        },
-        {
-            "name": "Outreachy",
-            "source": "outreachy",
-            "quota": PLATFORM_QUOTAS["outreachy"],
-            "fn": lambda q, lim, hrs, off: fetch_outreachy_internships(q, limit=lim, posted_within_hours=hrs)
-        },
     ]
 
 
-def fetch_jobs(search_query: str = "AI Intern", limit: int = 25,
+def fetch_jobs(search_query: str = "AI Engineer", limit: int = 25,
                posted_within_hours: int = 24, start_offset: int = 0) -> List[Dict[str, Any]]:
     """
-    Main entry point — cascades across all 10 platforms in priority order.
-    Each platform has a strict hard quota cap (not multiplied).
-    Enforces minimum 4-platform diversity.
+    Cascades across primary platforms first.
+    If the quota of `limit` (default 25) qualified listings is not fulfilled,
+    falls back to LinkedIn India to supply the remainder.
     """
     all_jobs: List[Dict[str, Any]] = []
     seen_links: set = set()
@@ -1135,9 +903,9 @@ def fetch_jobs(search_query: str = "AI Intern", limit: int = 25,
     def _add_unique(jobs_list, source_name: str, quota: int):
         added = 0
         for j in jobs_list:
-            if added >= quota:
+            if added >= quota or len(all_jobs) >= limit:
                 break
-            if not is_remote_or_virtual(j):
+            if not is_located_in_india(j):
                 continue
             key = (j.get("apply_url") or j.get("link") or "").strip().lower()
             if key and key not in seen_links:
@@ -1146,19 +914,33 @@ def fetch_jobs(search_query: str = "AI Intern", limit: int = 25,
                 platform_counts[source_name] = platform_counts.get(source_name, 0) + 1
                 added += 1
 
+    # ── Node 1: Primary Portals Search ────────────────────────────────────
     platforms = get_scraper_platforms()
-    remaining = limit
-
     for platform in platforms:
-        if remaining <= 0:
+        if len(all_jobs) >= limit:
             break
         plat_fn = platform["fn"]
-        quota = min(platform["quota"], remaining)
+        quota = min(platform["quota"], limit - len(all_jobs))
         try:
             raw_jobs = plat_fn(search_query, quota * 2, posted_within_hours, start_offset)
             _add_unique(raw_jobs, platform["source"], quota)
-            remaining = limit - len(all_jobs)
         except Exception as e:
             logger.warning(f"Error on {platform['name']}: {e}")
+
+    # ── Node 2: LinkedIn Fallback Node (if target quota not fulfilled) ────
+    if len(all_jobs) < limit:
+        needed = limit - len(all_jobs)
+        logger.info(f"Primary platforms yielded {len(all_jobs)}/{limit}. Triggering LinkedIn fallback for remaining {needed}...")
+        for offset in [0, 10, 20, 30]:
+            if len(all_jobs) >= limit:
+                break
+            try:
+                raw_linkedin = fetch_linkedin_jobs(
+                    search_query, location="India", limit=needed * 2,
+                    posted_within_hours=posted_within_hours, start_offset=offset
+                )
+                _add_unique(raw_linkedin, "linkedin", needed)
+            except Exception as e:
+                logger.warning(f"LinkedIn fallback error: {e}")
 
     return all_jobs[:limit]

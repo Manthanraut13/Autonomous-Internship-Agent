@@ -39,10 +39,15 @@ if BASE_DIR not in sys.path:
 from config.settings import settings
 from db.database import get_db_context, init_db
 from db.models import Job, PipelineRun
-from tools.job_api import get_scraper_platforms, is_remote_or_virtual, PLATFORM_QUOTAS
+from tools.job_api import (
+    get_scraper_platforms,
+    is_located_in_india,
+    fetch_linkedin_jobs,
+    PLATFORM_QUOTAS,
+)
 from tools.resume_parser import parse_resume, extract_text_from_pdf, get_search_queries_from_resume
 from tools.jd_matcher import match_resume_to_job
-from tools.semantic_matcher import ResumeEmbedder, classify_role_type
+from tools.semantic_matcher import ResumeEmbedder, classify_role_type, classify_work_mode
 from tools.jd_fetcher import fetch_full_job_description
 from tools.whatsapp_handler import send_whatsapp_summary
 from tools.csv_exporter import export_jobs_to_csv
@@ -159,16 +164,18 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
     print("\n🔍 Generating optimal AI/GenAI search queries from resume...")
     search_queries = get_search_queries_from_resume(resume_path)
     core_ai_queries = [
+        "AI Engineer",
+        "GenAI Developer",
+        "LLM Engineer",
+        "Machine Learning Engineer",
+        "AI Automation Engineer",
+        "AI Agent Developer",
         "AI Intern",
-        "AI Automation Intern",
-        "GenAI Developer Intern",
-        "Agentic AI Intern",
-        "LLM Engineer Intern",
-        "AI ML Intern",
         "Machine Learning Intern",
-        "AI Agent Developer Intern",
-        "AI Automation Engineer Intern",
-        "NLP AI Intern"
+        "GenAI Intern",
+        "Data Science Intern",
+        "Python AI Developer",
+        "NLP Engineer"
     ]
     for q in core_ai_queries:
         if q not in search_queries:
@@ -180,9 +187,9 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
     db_links, db_apply_urls, db_title_company = get_existing_db_signatures()
     print(f"   Known DB listings to deduplicate against: {len(db_links)} records")
 
-    # Platform Quotas & Cascading Strategy
+    # Platform Quotas & Cascading Strategy (Primary Portals First)
     platforms = get_scraper_platforms()
-    print(f"\n🌐 Active 10 Platforms (Priority Order & Quotas):")
+    print(f"\n🌐 Active Primary Platforms (Priority Order & Quotas):")
     for p in platforms:
         print(f"   • {p['name']} (Quota: {p['quota']} listings)")
     print(f"   🛑 Stop Condition: Search terminates once target of {target_matches} matches is reached.\n")
@@ -196,6 +203,7 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
     duplicate_skipped_count = 0
     semantic_filtered_count = 0
 
+    # ── Node 1: Primary Portals Search ────────────────────────────────────
     for p_idx, platform in enumerate(platforms, 1):
         if len(scored_jobs) >= target_matches:
             break
@@ -216,8 +224,6 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
             if len(scored_jobs) >= target_matches:
                 break
 
-            # BUG-8 FIX: hard cap at exact platform quota — no 2x multiplier.
-            # Previously `plat_quota * 2` allowed LinkedIn to take 14 of 25 slots.
             if (platform_matched_counts[plat_source] - plat_matches_before) >= plat_quota:
                 break
 
@@ -249,22 +255,18 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
                     duplicate_skipped_count += 1
                     continue
 
-                # Strict Remote / Online / Virtual opening constraint
-                if not is_remote_or_virtual(j):
+                # Strict India location guardrail (All employment types & arrangements inside India)
+                if not is_located_in_india(j):
                     continue
 
-                # BUG-7 FIX: 24-hour date gate.
-                # Jobs from scrapers that provide real timestamps are checked against cutoff.
-                # posted_at is a datetime object (set by scrapers); None/string means skip check.
+                # 24-hour date gate
                 posted_at_val = j.get("posted_at")
                 if isinstance(posted_at_val, datetime):
-                    # Ensure tz-aware comparison
                     if posted_at_val.tzinfo is None:
                         posted_at_val = posted_at_val.replace(tzinfo=timezone.utc)
                     date_cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
                     if posted_at_val < date_cutoff:
                         continue  # genuinely stale — skip
-
 
                 if link:
                     seen_in_run_links.add(link)
@@ -274,10 +276,6 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
                     seen_in_run_signatures.add(sig)
 
                 desc = j.get("description", "")
-
-                # BUG-11 FIX: raised threshold from 200 to 400 chars.
-                # Most scraper-generated descriptions are ~60 chars ("AI Intern at Startup."),
-                # which are meaningless for semantic matching even though they pass 200.
                 if len(desc.strip()) < 400 and j.get("link"):
                     try:
                         enriched = fetch_full_job_description(j["link"])
@@ -290,9 +288,11 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
                 if not desc or len(desc.strip()) < 30:
                     continue
 
-                # ── Step A: Role Type Classification ──────────────────────────
+                # ── Step A: Role Type & Work Mode Classification ───────────────
                 role_type = classify_role_type(j)
+                work_mode = classify_work_mode(j)
                 j["role_type"] = role_type
+                j["work_mode"] = work_mode
 
                 # ── Step B: Semantic Pre-Filtering via Local Embeddings ────────
                 sem_score = embedder.compute_semantic_score(desc)
@@ -334,17 +334,146 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
 
                 time.sleep(1.5)
 
+    # ── Node 2: LinkedIn Fallback Node (ONLY if quota < target_matches) ──
+    if len(scored_jobs) < target_matches:
+        needed = target_matches - len(scored_jobs)
+        print(f"\n{'━' * 65}")
+        print(f"⚠️ [FALLBACK NODE ACTIVATED] Primary portals yielded {len(scored_jobs)}/{target_matches} matches.")
+        print(f"   Executing LinkedIn India Fallback Search to fulfill quota of {target_matches} listings...")
+        print(f"{'━' * 65}")
+
+        # Search LinkedIn India: 24h first, then 72h window if still below target
+        for time_window in [24, 72]:
+            if len(scored_jobs) >= target_matches:
+                break
+
+            for offset in [0, 10, 20, 30, 40, 50]:
+                if len(scored_jobs) >= target_matches:
+                    break
+
+                for query in search_queries:
+                    if len(scored_jobs) >= target_matches:
+                        break
+
+                    print(f"\n   ➤ [LinkedIn India Fallback] Query: \"{query}\" (offset={offset}, {time_window}h)")
+                    try:
+                        raw_jobs = fetch_linkedin_jobs(
+                            search_query=query,
+                            location="India",
+                            limit=10,
+                            posted_within_hours=time_window,
+                            start_offset=offset
+                        )
+                    except Exception as e:
+                        print(f"   ⚠️ Scraper error on LinkedIn Fallback: {e}")
+                        continue
+
+                    total_scraped_count += len(raw_jobs)
+
+                    for j in raw_jobs:
+                        if len(scored_jobs) >= target_matches:
+                            break
+
+                        link = (j.get("link") or "").strip().lower()
+                        apply_url = (j.get("apply_url") or "").strip().lower()
+                        title = (j.get("title") or "").strip().lower()
+                        company = (j.get("company") or "").strip().lower()
+                        sig = (title, company)
+
+                        # Deduplication check across DB and current run
+                        if (link in db_links or
+                            apply_url in db_apply_urls or
+                            sig in db_title_company or
+                            link in seen_in_run_links or
+                            sig in seen_in_run_signatures):
+                            duplicate_skipped_count += 1
+                            continue
+
+                        # Strict India location guardrail
+                        if not is_located_in_india(j):
+                            continue
+
+                        posted_at_val = j.get("posted_at")
+                        if isinstance(posted_at_val, datetime):
+                            if posted_at_val.tzinfo is None:
+                                posted_at_val = posted_at_val.replace(tzinfo=timezone.utc)
+                            date_cutoff = datetime.now(timezone.utc) - timedelta(hours=time_window)
+                            if posted_at_val < date_cutoff:
+                                continue
+
+                        if link:
+                            seen_in_run_links.add(link)
+                        if apply_url:
+                            seen_in_run_links.add(apply_url)
+                        if title and company:
+                            seen_in_run_signatures.add(sig)
+
+                        desc = j.get("description", "")
+                        if len(desc.strip()) < 400 and j.get("link"):
+                            try:
+                                enriched = fetch_full_job_description(j["link"])
+                                if enriched and len(enriched) > len(desc):
+                                    desc = enriched
+                                    j["description"] = desc
+                            except Exception:
+                                pass
+
+                        if not desc or len(desc.strip()) < 30:
+                            continue
+
+                        # Role Type & Work Mode Classification
+                        role_type = classify_role_type(j)
+                        work_mode = classify_work_mode(j)
+                        j["role_type"] = role_type
+                        j["work_mode"] = work_mode
+
+                        sem_score = embedder.compute_semantic_score(desc)
+                        j["semantic_score"] = sem_score
+
+                        if sem_score < 35.0:
+                            semantic_filtered_count += 1
+                            print(f"      ⏩ Semantic pre-filter passed over ({sem_score}/100): {j['title']} @ {j['company']}")
+                            continue
+
+                        print(f"      🔄 Scoring [LinkedIn Fallback]: [{role_type.upper()}|{work_mode.upper()}] {j['title']} @ {j['company']} (Semantic: {sem_score})…", end="", flush=True)
+
+                        try:
+                            result = match_resume_to_job(resume_text, desc)
+                            score = result.get("score", 0)
+                            reasoning = result.get("reasoning", "")
+                            key_matches = result.get("key_matches", [])
+                        except Exception as e:
+                            print(f" ❌ Error: {e}")
+                            continue
+
+                        j["match_score"] = score
+                        j["match_reasoning"] = reasoning
+                        j["key_matches"] = key_matches
+
+                        emoji = "✅" if score >= threshold else "⬇️"
+                        print(f" {emoji} LLM Score: {score}/100")
+
+                        if score >= threshold:
+                            scored_jobs.append(j)
+                            platform_matched_counts["linkedin"] = platform_matched_counts.get("linkedin", 0) + 1
+                            print(f"         🎯 [Found {len(scored_jobs)}/{target_matches} matches! (LinkedIn Fallback: {platform_matched_counts['linkedin']})]")
+                            if len(scored_jobs) >= target_matches:
+                                print(f"\n🎉 Fallback node fulfilled the quota of {target_matches} qualified AI listings!")
+                                break
+
+                        time.sleep(1.5)
+
     # ── Summary of Qualified Matches ──────────────────────────────────────
     print(f"\n{'─' * 65}")
     print(f"📊 Pipeline Execution Summary:")
-    print(f"   • Total Scraped Across 10 Portals: {total_scraped_count}")
+    print(f"   • Total Scraped Across All Portals: {total_scraped_count}")
     print(f"   • Cross-run Duplicates Filtered: {duplicate_skipped_count}")
     print(f"   • Low Semantic Match Pre-filtered (<35): {semantic_filtered_count}")
     print(f"   • Final Unique Matches ({threshold}+ score): {len(scored_jobs)}")
     print(f"   • Platform Breakdown: {dict((k, v) for k, v in platform_matched_counts.items() if v > 0)}")
 
     if not scored_jobs:
-        print("   ⚠️ No jobs met the threshold in the past 24 hours.")
+        print("   ⚠️ No jobs met the threshold in the specified timeframe.")
         if settings.whatsapp_from and settings.user_whatsapp_number:
             send_whatsapp_summary(settings.user_whatsapp_number, [])
         with get_db_context() as db:
@@ -366,7 +495,7 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
 
     print(f"\n🏆 Final {len(final_jobs)} Unique Matches Selected for Report:")
     for idx, j in enumerate(final_jobs, 1):
-        print(f"   {idx}. [{j.get('role_type','internship')}] {j['title']} @ {j['company']} ({j.get('source','linkedin')}) — Score: {j['match_score']}/100 (Sem: {j.get('semantic_score', 0)})")
+        print(f"   {idx}. [{j.get('role_type','internship')}|{j.get('work_mode','onsite')}] {j['title']} @ {j['company']} ({j.get('source','linkedin')}) — Score: {j['match_score']}/100 (Sem: {j.get('semantic_score', 0)})")
 
     # ── Save to Database ──────────────────────────────────────────────────
     print(f"\n💾 Saving {len(final_jobs)} new listings to database…")
@@ -392,13 +521,14 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
                     description=job.get("description", "")[:2000],
                     link=job["link"],
                     apply_url=job.get("apply_url", ""),
-                    location=job.get("location", "Remote"),
+                    location=job.get("location", "India"),
                     source=job.get("source", "aggregated"),
                     posted_at=posted_at_val,
                     match_score=job["match_score"],
                     match_reasoning=job.get("match_reasoning", ""),
                     semantic_score=job.get("semantic_score"),
                     role_type=job.get("role_type", "internship"),
+                    work_mode=job.get("work_mode", "onsite"),
                     status="saved",
                 )
                 db.add(db_job)

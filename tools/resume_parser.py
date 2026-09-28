@@ -521,33 +521,34 @@ def get_search_queries_from_resume(file_path: str, max_queries: int = 8) -> List
         if q not in queries:
             queries.append(q)
 
-    # ── Strictly Remote/Virtual AI-only queries (always included) ─────────
-    _add_query("Remote AI Intern")
-    _add_query("Remote AI Automation Intern")
-    _add_query("Remote GenAI Developer Intern")
-    _add_query("Virtual AI Intern")
-    _add_query("Remote Agentic AI Intern")
+    # ── High-intent AI queries across Full-Time, Internship, Contract ─────
+    _add_query("AI Engineer")
+    _add_query("GenAI Developer")
+    _add_query("AI Intern")
+    _add_query("Machine Learning Engineer")
+    _add_query("Agentic AI Developer")
+    _add_query("AI Automation Engineer")
 
-    # ── Skill-based Remote AI queries ─────────────────────────────────
+    # ── Skill-based AI queries ────────────────────────────────────────
     if any(k in all_context for k in ["langchain", "llm", "openai", "gpt", "prompt", "rag", "agent", "crewai"]):
-        _add_query("Remote LLM Engineer Intern")
-        _add_query("Remote AI Agent Intern")
+        _add_query("LLM Engineer")
+        _add_query("AI Agent Developer")
 
     if any(k in all_context for k in ["ai", "machine learning", "ml", "deep learning", "nlp", "transformer"]):
-        _add_query("Remote AI ML Intern")
-        _add_query("Online Machine Learning Intern")
+        _add_query("Machine Learning Intern")
+        _add_query("Deep Learning Engineer")
 
     if any(k in all_context for k in ["automation", "playwright", "selenium", "n8n", "zapier", "workflow"]):
-        _add_query("Remote AI Automation Engineer Intern")
+        _add_query("AI Automation Developer")
 
     if any(k in all_context for k in ["computer vision", "opencv", "image", "yolo", "detection"]):
-        _add_query("Remote Computer Vision AI Intern")
+        _add_query("Computer Vision Engineer")
 
     if any(k in all_context for k in ["nlp", "text", "sentiment", "chatbot", "conversational"]):
-        _add_query("Remote NLP AI Intern")
+        _add_query("NLP Engineer")
 
     # Core fallbacks
-    fallbacks = ["Remote LLM Engineer Intern", "Remote AI ML Intern", "Virtual AI Intern", "Remote Machine Learning Intern"]
+    fallbacks = ["AI Developer", "Machine Learning Developer", "Python AI Engineer", "GenAI Intern"]
     for fb in fallbacks:
         if len(queries) >= max_queries:
             break

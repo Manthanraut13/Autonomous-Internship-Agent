@@ -96,7 +96,8 @@ class Job(Base):
     match_score = Column(Float, nullable=True)
     match_reasoning = Column(Text, nullable=True)
     semantic_score = Column(Float, nullable=True)  # Pre-LLM embedding similarity (0-100)
-    role_type = Column(String(20), nullable=True)   # "internship" or "full-time"
+    role_type = Column(String(20), nullable=True)   # "internship", "full-time", "part-time", "contract"
+    work_mode = Column(String(50), nullable=True, default="onsite")  # "onsite", "hybrid", "remote"
 
     # Workflow lifecycle status: 'saved' (Inbox/New), 'applied', 'rejected' (Not Applied)
     status = Column(

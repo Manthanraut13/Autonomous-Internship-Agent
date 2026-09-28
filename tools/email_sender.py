@@ -197,7 +197,7 @@ def send_csv_email(csv_path: str, job_count: int) -> bool:
         return False
 
     recipient = settings.recipient_email or "manthanr141@gmail.com"
-    subject = f"Autonomous Internship Agent: {job_count} Remote AI Matches!"
+    subject = f"Autonomous Internship Agent: {job_count} Qualified India AI Matches!"
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -218,22 +218,22 @@ def send_csv_email(csv_path: str, job_count: int) -> bool:
       <div class="container">
         <div class="header">
           <h1 class="title">Autonomous Internship Agent</h1>
-          <p class="subtitle">Daily AI, GenAI & Automation Internship Intelligence</p>
+          <p class="subtitle">Daily AI, GenAI & ML Job Intelligence (India Only)</p>
         </div>
         
         <p>Hello <strong>{settings.candidate_name}</strong>,</p>
-        <p>Your scheduled internship pipeline has finished scanning priority platforms (LinkedIn Startups, Remotive, Himalayas).</p>
+        <p>Your scheduled pipeline has scanned job portals across India with strict location verification (Full-time, Part-time, Contract, Internship, On-site, Hybrid, Remote in India).</p>
         
         <div class="highlight-box">
           <div class="count">{job_count}</div>
-          <p style="margin: 4px 0 0 0; font-weight: 600; color: #136299;">Qualified Remote / Virtual AI Openings Discovered</p>
+          <p style="margin: 4px 0 0 0; font-weight: 600; color: #136299;">Verified India AI Openings Discovered</p>
         </div>
 
-        <p>The full structured breakdown including Match Scores, Reasoning, Key Skills, and Direct Apply links is attached as a CSV report.</p>
+        <p>The full structured breakdown including Match Scores, Reasoning, Key Skills, Role Types, Work Modes, and Direct Apply links is attached as a CSV report.</p>
         <p>You can also review, track, and manage all applications in real time on your <a href="http://localhost:8000/dashboard" style="color: #136299; font-weight: 600;">Glacial Precision Dashboard</a>.</p>
         
         <div class="footer">
-          <p>Autonomous Internship Agent • Automated Intelligence with Human Pulse</p>
+          <p>Autonomous Internship Agent • India AI Career Intelligence</p>
         </div>
       </div>
     </body>

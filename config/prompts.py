@@ -29,17 +29,17 @@ Evaluate the candidate across four distinct components and sum the points:
    - Mismatched tech stack (e.g., Job requires Swift, Java, C#, PHP, or Salesforce when resume is Python/AI) = 0–15 pts.
 
 2. **Domain & Role Alignment (0 – 30 points)**:
-   - Does the role match the candidate's target career focus (AI/GenAI Intern, AI Automation, Agentic AI, LLM Intern)?
-   - Strong role match (AI Intern, GenAI Developer Intern, LLM Automation Intern) = 25–30 pts.
-   - Adjacent role (General Python Backend Intern, Machine Learning Intern) = 18–24 pts.
+   - Does the role match the candidate's target career focus (AI/GenAI, LLM Engineering, Agentic AI, AI Automation, Machine Learning, Python Development)?
+   - Strong role match (AI Engineer, GenAI Developer, LLM Specialist, Agentic AI Developer, AI Intern) = 25–30 pts.
+   - Adjacent role (General Python Backend, Machine Learning, Data Science, Automation Engineer) = 18–24 pts.
    - Unrelated role (Sales, DevOps, Mobile Native, Hardware, QA manual, UI Design) = 0–10 pts.
 
-3. **Seniority & Internship Fit (0 – 20 points)**:
-   - **CRITICAL**: The candidate is specifically seeking **INTERNSHIP & EARLY-CAREER** positions.
-   - Internship / Student / Co-op / Trainee / Graduate Intern = 18–20 pts.
-   - Entry-level / Junior (0–1 years required) = 12–15 pts.
-   - Mid-level (2–3 years full-time experience required) = 4–8 pts.
-   - Senior / Lead / Staff / Principal (requires 4+ years) = 0 pts (and cap total overall score below 45).
+3. **Role Type & Seniority Fit (0 – 20 points)**:
+   - The candidate is open to **Full-time, Part-time, Contract, and Internship** positions located in India across all arrangements (On-site, Hybrid, Remote in India).
+   - Internship / Student / Co-op / Trainee / Graduate = 18–20 pts.
+   - Entry-level / Junior / Associate Engineer (0–2 years experience) = 17–20 pts.
+   - Mid-level Engineer (2–4 years experience) = 14–17 pts.
+   - Senior / Lead / Staff / Principal / Director (requires 5+ years) = 0–5 pts (and cap total overall score below 50).
 
 4. **Relevant Projects & Concrete Evidence (0 – 10 points)**:
    - Does the resume showcase specific projects or implementations directly proving they can do what the job description asks?
@@ -47,18 +47,19 @@ Evaluate the candidate across four distinct components and sum the points:
    - Weak or indirect evidence = 3–7 pts.
    - No relevant projects = 0–2 pts.
 
-5. **MANDATORY Remote / Online / Virtual Work Type Constraint**:
-   - The candidate **EXCLUSIVELY accepts Remote, Online, Virtual, or Work-From-Home (WFH)** positions.
-   - If a job description or location explicitly indicates it is **strictly on-site / in-office only** with NO remote, online, or virtual option, immediately assign an overall **score of 0** and state 'Disqualified: Strict on-site / in-office only (no remote/virtual option)' in reasoning.
+5. **MANDATORY India Location Constraint (Strict Guardrail)**:
+   - The candidate **EXCLUSIVELY accepts positions located in INDIA**.
+   - Valid locations include: On-site in an Indian city (Bengaluru, Hyderabad, Pune, Mumbai, Delhi/NCR, etc.), Hybrid in India, or Remote within India (e.g. Remote - India, WFH India).
+   - If a job description or location explicitly indicates it is located **outside India** (e.g., US, UK, Canada, Europe, Germany, Singapore, Australia, etc.) or is a global/remote role without eligibility for India-based candidates, immediately assign an overall **score of 0** and state 'Disqualified: Job is located outside India' in reasoning.
 
 ## Score Guidelines
-- **90–100**: Exceptional direct fit — Remote/Online AI/GenAI internship matching the candidate's skills and projects.
-- **75–89**: Strong fit — relevant Remote/Online AI internship or junior entry role with high domain overlap.
+- **90–100**: Exceptional direct fit — AI/GenAI/ML role located in India matching the candidate's skills and projects (Full-time, Internship, Contract, or Part-time; On-site, Hybrid, or Remote in India).
+- **75–89**: Strong fit — relevant AI/ML role in India with substantial domain and tech stack overlap.
 - **55–74**: Moderate fit — candidate has transferable technical skills but gaps in specific tools/experience.
-- **30–54**: Weak fit — experienced full-time role requiring years of experience, or significant tech stack gaps.
-- **0–29**: Poor fit or Disqualified — non-remote on-site only, completely different field, or senior management role.
+- **30–54**: Weak fit — role requiring senior executive experience (5+ years), or significant tech stack gaps.
+- **0–29**: Poor fit or Disqualified — located outside India, completely different field, or executive management role.
 
-DO NOT score every job the same (e.g., 85). Be discriminating, prioritize remote startup internships, and penalize experienced full-time or on-site roles.
+Reward real technical alignment with the candidate's Python, GenAI, LLM, Agentic AI, and Machine Learning capabilities in India.
 """
 
 

@@ -153,6 +153,10 @@ def init_db() -> None:
                     logger.info("Migrating: Adding missing 'role_type' column to jobs table...")
                     conn.execute(text("ALTER TABLE jobs ADD COLUMN role_type VARCHAR(20) DEFAULT 'internship';"))
                     print("Auto-migration applied: Added 'role_type' column to jobs table.")
+                if "work_mode" not in existing_cols:
+                    logger.info("Migrating: Adding missing 'work_mode' column to jobs table...")
+                    conn.execute(text("ALTER TABLE jobs ADD COLUMN work_mode VARCHAR(50) DEFAULT 'onsite';"))
+                    print("Auto-migration applied: Added 'work_mode' column to jobs table.")
     except Exception as exc:
         logger.error(f"Failed to create database tables: {exc}", exc_info=True)
         raise
