@@ -255,45 +255,57 @@ class ResumeEmbedder:
 
 def classify_role_type(job: Dict[str, Any]) -> str:
     """
-    Classifies a job as 'internship' or 'full-time' based on title and description.
+    Classifies a job as 'internship', 'full-time', 'part-time', or 'contract'
+    based on title and description.
     """
     title = (job.get("title") or "").lower()
     desc = (job.get("description") or "").lower()
     source = (job.get("source") or "").lower()
     combined = f"{title} {desc}"
 
-    # Sources that are inherently internship/fellowship programs
-    internship_sources = {"mlh", "gsoc", "outreachy", "internshala", "pittcsc", "simplifyjobs"}
-    if source in internship_sources:
-        return "internship"
+    # Check contract / freelance
+    contract_keywords = [
+        "contract", "contractor", "freelance", "freelancer",
+        "consultant", "temporary", "temp", "fixed-term", "project-based"
+    ]
+    if any(re.search(r"\b" + re.escape(k) + r"\b", combined) for k in contract_keywords):
+        return "contract"
 
-    # Strong internship signals
+    # Check part-time
+    part_time_keywords = ["part-time", "part time", "flexible hours"]
+    if any(re.search(r"\b" + re.escape(k) + r"\b", combined) for k in part_time_keywords):
+        return "part-time"
+
+    # Check internship / fellowship / co-op
     internship_keywords = [
         "intern", "internship", "co-op", "coop", "trainee",
         "fellow", "fellowship", "apprentice", "apprenticeship",
         "student", "graduate program", "graduate trainee",
-        "summer program", "summer associate", "working student",
+        "summer program", "summer associate", "working student"
     ]
-
-    # Strong full-time signals
-    fulltime_keywords = [
-        "full-time", "full time", "permanent", "regular position",
-        "senior", "lead", "staff", "principal", "director",
-        "5+ years", "8+ years", "10+ years", "3+ years",
-        "mid-level", "experienced professional",
-    ]
-
-    intern_score = sum(1 for kw in internship_keywords if kw in combined)
-    ft_score = sum(1 for kw in fulltime_keywords if kw in combined)
-
-    if intern_score > ft_score:
-        return "internship"
-    elif ft_score > intern_score:
-        return "full-time"
-
-    # Default: entry-level clues
-    if "entry" in combined or "junior" in combined or "associate" in combined:
+    if any(re.search(r"\b" + re.escape(k) + r"\b", combined) for k in internship_keywords):
         return "internship"
 
-    # Default to internship since the agent targets internships
-    return "internship"
+    # Sources that are inherently internship/fellowship programs
+    if source in {"mlh", "gsoc", "outreachy", "pittcsc", "simplifyjobs"}:
+        return "internship"
+
+    # Default to full-time for standard engineering roles
+    return "full-time"
+
+
+def classify_work_mode(job: Dict[str, Any]) -> str:
+    """
+    Classifies work arrangement as 'remote', 'hybrid', or 'onsite'.
+    """
+    title = (job.get("title") or "").lower()
+    desc = (job.get("description") or "").lower()
+    loc = (job.get("location") or "").lower()
+    combined = f"{title} {loc} {desc[:500]}"
+
+    if "hybrid" in combined:
+        return "hybrid"
+    if any(k in combined for k in ["remote", "wfh", "work from home", "virtual", "online"]):
+        return "remote"
+    return "onsite"
+

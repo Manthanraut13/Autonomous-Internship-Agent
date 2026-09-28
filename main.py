@@ -411,6 +411,7 @@ async def get_dashboard_jobs(
         "match_score": j.match_score, "match_reasoning": j.match_reasoning,
         "semantic_score": j.semantic_score,
         "role_type": j.role_type or "internship",
+        "work_mode": getattr(j, "work_mode", "onsite") or "onsite",
         "status": j.status,
     } for j in jobs]
     return {"total": len(results), "jobs": results}
@@ -538,22 +539,22 @@ async def stream_pipeline(
 
             # Pre-compute resume embeddings once
             yield evt("resume", "Generating vector embeddings for candidate resume sections...")
-            from tools.semantic_matcher import ResumeEmbedder, classify_role_type
+            from tools.semantic_matcher import ResumeEmbedder, classify_role_type, classify_work_mode
             from tools.jd_fetcher import fetch_full_job_description
             embedder = await asyncio.to_thread(ResumeEmbedder, resume_path)
             yield evt("resume", f"Vector embeddings ready ({len(embedder.chunks)} semantic sections cached)")
             await asyncio.sleep(0.1)
 
             # ── Step 2: Generate search queries ──────────────────────────
-            yield evt("queries", "Generating AI, GenAI & Automation search queries...")
+            yield evt("queries", "Generating AI, GenAI & ML search queries (India Only)...")
             await asyncio.sleep(0.1)
 
             search_queries = get_search_queries_from_resume(resume_path)
             core_ai_queries = [
-                "AI Intern", "AI Automation Intern", "GenAI Developer Intern",
-                "Agentic AI Intern", "LLM Engineer Intern", "AI ML Intern",
-                "Machine Learning Intern", "AI Agent Developer Intern",
-                "AI Automation Engineer Intern", "NLP AI Intern"
+                "AI Engineer", "GenAI Developer", "LLM Engineer",
+                "Machine Learning Engineer", "AI Automation Engineer",
+                "AI Agent Developer", "AI Intern", "Machine Learning Intern",
+                "GenAI Intern", "Data Science Intern", "Python AI Developer", "NLP Engineer"
             ]
             for q in core_ai_queries:
                 if q not in search_queries:
@@ -568,8 +569,8 @@ async def stream_pipeline(
                 db_apply_urls = set(r[0].strip().lower() for r in db.query(Job.apply_url).all() if r[0])
                 db_signatures = set((r[0].strip().lower(), r[1].strip().lower()) for r in db.query(Job.title, Job.company).all() if r[0] and r[1])
 
-            # ── Step 4: Platform Priority Scraping & Immediate Evaluation ─
-            from tools.job_api import get_scraper_platforms
+            # ── Step 4: Primary Portals Scraping & Immediate Evaluation ──
+            from tools.job_api import get_scraper_platforms, is_located_in_india, fetch_linkedin_jobs
             from tools.jd_matcher import match_resume_to_job
 
             seen_in_run_links: Set[str] = set()
@@ -577,9 +578,10 @@ async def stream_pipeline(
             total_scraped_count = 0
             platforms = get_scraper_platforms()
 
-            yield evt("scraping", f"Starting priority search (Target: {target} qualified AI internship openings)...")
+            yield evt("scraping", f"Starting primary portal search (Target: {target} verified India AI openings)...")
             await asyncio.sleep(0.1)
 
+            # ── Node 1: Primary Portals Search ────────────────────────────
             for p_idx, platform in enumerate(platforms, 1):
                 if len(scored_jobs) >= target:
                     break
@@ -624,9 +626,8 @@ async def stream_pipeline(
                             sig in seen_in_run_signatures):
                             continue
 
-                        # Strict Remote / Online / Virtual opening constraint
-                        from tools.job_api import is_remote_or_virtual
-                        if not is_remote_or_virtual(j):
+                        # Strict India location guardrail (All work arrangements & employment types in India)
+                        if not is_located_in_india(j):
                             continue
 
                         if link: seen_in_run_links.add(link)
@@ -634,7 +635,7 @@ async def stream_pipeline(
                         if title and company: seen_in_run_signatures.add(sig)
 
                         desc = j.get("description", "")
-                        if len(desc.strip()) < 200 and j.get("link"):
+                        if len(desc.strip()) < 400 and j.get("link"):
                             try:
                                 enriched = await asyncio.to_thread(fetch_full_job_description, j["link"])
                                 if enriched and len(enriched) > len(desc):
@@ -646,20 +647,21 @@ async def stream_pipeline(
                         if not desc or len(desc.strip()) < 30:
                             continue
 
-                        # Classify role type (internship vs full-time)
+                        # Classify role type & work mode
                         role_type = classify_role_type(j)
+                        work_mode = classify_work_mode(j)
                         j["role_type"] = role_type
+                        j["work_mode"] = work_mode
 
                         # Pre-filter using local embeddings
                         sem_score = await asyncio.to_thread(embedder.compute_semantic_score, desc)
                         j["semantic_score"] = sem_score
 
                         if sem_score < 35.0:
-                            yield evt("matching", f"⏩ [{role_type.upper()}] Pre-filtered low semantic match ({sem_score}/100): {j['title']} @ {j['company']}")
+                            yield evt("matching", f"⏩ [{role_type.upper()}|{work_mode.upper()}] Pre-filtered low semantic match ({sem_score}/100): {j['title']} @ {j['company']}")
                             continue
 
-                        yield evt("matching", f"[{len(scored_jobs)}/{target} Found] 🔄 Scoring [{role_type.upper()}]: {j['title']} @ {j['company']} (Semantic: {sem_score})...")
-
+                        yield evt("matching", f"[{len(scored_jobs)}/{target} Found] 🔄 Scoring [{role_type.upper()}|{work_mode.upper()}]: {j['title']} @ {j['company']} (Semantic: {sem_score})...")
 
                         try:
                             result = await asyncio.to_thread(match_resume_to_job, resume_text, desc)
@@ -675,29 +677,144 @@ async def stream_pipeline(
                         j["key_matches"] = key_matches
 
                         emoji = "✅" if score >= threshold else "⬇️"
-                        yield evt("matching", f"[{len(scored_jobs)+1}/{target}] {emoji} [{role_type.upper()}] {j['title']} @ {j['company']} → {score}/100",
-                                  {"title": j["title"], "company": j["company"], "score": score, "role_type": role_type, "semantic_score": sem_score})
+                        yield evt("matching", f"[{len(scored_jobs)+1}/{target}] {emoji} [{role_type.upper()}|{work_mode.upper()}] {j['title']} @ {j['company']} → {score}/100",
+                                  {"title": j["title"], "company": j["company"], "score": score, "role_type": role_type, "work_mode": work_mode, "semantic_score": sem_score})
 
                         if score >= threshold:
                             scored_jobs.append(j)
                             if len(scored_jobs) >= target:
-                                yield evt("matching", f"🎉 Reached exact target of {target} qualified AI internship openings on {plat_name}! Halting search.")
+                                yield evt("matching", f"🎉 Reached exact target of {target} qualified India AI openings on {plat_name}! Halting search.")
                                 break
 
                         await asyncio.sleep(1.5)
 
                     await asyncio.sleep(0.05)
 
+            # ── Node 2: LinkedIn Fallback Node (ONLY if quota < target) ────
+            if len(scored_jobs) < target:
+                yield evt("scraping", f"⚠️ Fallback Node Activated: Primary platforms yielded {len(scored_jobs)}/{target} matches. Initiating LinkedIn India search to fulfill quota of {target}...")
+                await asyncio.sleep(0.1)
+
+                for time_window in [24, 72]:
+                    if len(scored_jobs) >= target:
+                        break
+
+                    for offset in [0, 10, 20, 30, 40, 50]:
+                        if len(scored_jobs) >= target:
+                            break
+
+                        for query in search_queries:
+                            if await request.is_disconnected():
+                                return
+                            if len(scored_jobs) >= target:
+                                break
+
+                            yield evt("scraping", f"[LinkedIn Fallback] Querying: \"{query}\" (offset={offset}, {time_window}h)...")
+                            try:
+                                raw_jobs = await asyncio.to_thread(
+                                    fetch_linkedin_jobs,
+                                    search_query=query,
+                                    location="India",
+                                    limit=10,
+                                    posted_within_hours=time_window,
+                                    start_offset=offset
+                                )
+                            except Exception as e:
+                                yield evt("scraping", f"⚠️ LinkedIn fallback warning: {e}")
+                                continue
+
+                            total_scraped_count += len(raw_jobs)
+
+                            for j in raw_jobs:
+                                if await request.is_disconnected():
+                                    return
+                                if len(scored_jobs) >= target:
+                                    break
+
+                                link = (j.get("link") or "").strip().lower()
+                                apply_url = (j.get("apply_url") or "").strip().lower()
+                                title = (j.get("title") or "").strip().lower()
+                                company = (j.get("company") or "").strip().lower()
+                                sig = (title, company)
+
+                                if (link in db_links or
+                                    apply_url in db_apply_urls or
+                                    sig in db_signatures or
+                                    link in seen_in_run_links or
+                                    sig in seen_in_run_signatures):
+                                    continue
+
+                                if not is_located_in_india(j):
+                                    continue
+
+                                if link: seen_in_run_links.add(link)
+                                if apply_url: seen_in_run_links.add(apply_url)
+                                if title and company: seen_in_run_signatures.add(sig)
+
+                                desc = j.get("description", "")
+                                if len(desc.strip()) < 400 and j.get("link"):
+                                    try:
+                                        enriched = await asyncio.to_thread(fetch_full_job_description, j["link"])
+                                        if enriched and len(enriched) > len(desc):
+                                            desc = enriched
+                                            j["description"] = desc
+                                    except Exception:
+                                        pass
+
+                                if not desc or len(desc.strip()) < 30:
+                                    continue
+
+                                role_type = classify_role_type(j)
+                                work_mode = classify_work_mode(j)
+                                j["role_type"] = role_type
+                                j["work_mode"] = work_mode
+
+                                sem_score = await asyncio.to_thread(embedder.compute_semantic_score, desc)
+                                j["semantic_score"] = sem_score
+
+                                if sem_score < 35.0:
+                                    yield evt("matching", f"⏩ [LinkedIn Fallback] Pre-filtered low semantic match ({sem_score}/100): {j['title']} @ {j['company']}")
+                                    continue
+
+                                yield evt("matching", f"[{len(scored_jobs)}/{target} Found] 🔄 Scoring [LinkedIn Fallback | {role_type.upper()}|{work_mode.upper()}]: {j['title']} @ {j['company']} (Semantic: {sem_score})...")
+
+                                try:
+                                    result = await asyncio.to_thread(match_resume_to_job, resume_text, desc)
+                                    score = result.get("score", 0)
+                                    reasoning = result.get("reasoning", "")
+                                    key_matches = result.get("key_matches", [])
+                                except Exception as e:
+                                    yield evt("matching", f"❌ Error scoring {j['title']}: {e}")
+                                    continue
+
+                                j["match_score"] = score
+                                j["match_reasoning"] = reasoning
+                                j["key_matches"] = key_matches
+
+                                emoji = "✅" if score >= threshold else "⬇️"
+                                yield evt("matching", f"[{len(scored_jobs)+1}/{target}] {emoji} [LinkedIn Fallback] {j['title']} @ {j['company']} → {score}/100",
+                                          {"title": j["title"], "company": j["company"], "score": score, "role_type": role_type, "work_mode": work_mode, "semantic_score": sem_score})
+
+                                if score >= threshold:
+                                    scored_jobs.append(j)
+                                    if len(scored_jobs) >= target:
+                                        yield evt("matching", f"🎉 LinkedIn fallback fulfilled the quota of {target} qualified India AI listings!")
+                                        break
+
+                                await asyncio.sleep(1.5)
+
+                            await asyncio.sleep(0.05)
+
             # Sort and slice top target matches
             scored_jobs.sort(key=lambda x: x.get("match_score", 0), reverse=True)
             final_jobs = scored_jobs[:target]
 
-            yield evt("matching", f"Scoring complete! Found {len(final_jobs)} qualified unique AI matches ({threshold}+ threshold).",
+            yield evt("matching", f"Scoring complete! Found {len(final_jobs)} qualified unique India AI matches ({threshold}+ threshold).",
                       {"matched": len(final_jobs), "total_scraped": total_scraped_count})
             await asyncio.sleep(0.1)
 
             if not final_jobs:
-                yield evt("complete", "No postings met the threshold in the last 24h. Pipeline finished.", {"matched": 0})
+                yield evt("complete", "No postings met the threshold in the specified timeframe. Pipeline finished.", {"matched": 0})
                 with get_db_context() as db:
                     run_log = PipelineRun(
                         started_at=run_start,
@@ -712,7 +829,7 @@ async def stream_pipeline(
                 return
 
             # ── Step 5: Save to Database ─────────────────────────────────
-            yield evt("saving", f"Saving {len(final_jobs)} new listings to SQLite...")
+            yield evt("saving", f"Saving {len(final_jobs)} new listings to database...")
             await asyncio.sleep(0.1)
 
             import dateutil.parser as dp
@@ -733,13 +850,14 @@ async def stream_pipeline(
                         description=job.get("description", "")[:2000],
                         link=job["link"],
                         apply_url=job.get("apply_url", ""),
-                        location=job.get("location", "Remote"),
+                        location=job.get("location", "India"),
                         source=job.get("source", "aggregated"),
                         posted_at=posted_at_val,
                         match_score=job["match_score"],
                         match_reasoning=job.get("match_reasoning", ""),
                         semantic_score=job.get("semantic_score"),
                         role_type=job.get("role_type", "internship"),
+                        work_mode=job.get("work_mode", "onsite"),
                         status="saved",
                     )
                     db.add(db_job)
