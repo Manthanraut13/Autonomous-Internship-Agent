@@ -127,10 +127,10 @@ def get_existing_db_signatures() -> Tuple[Set[str], Set[str], Set[Tuple[str, str
 # Main Pipeline Function
 # ──────────────────────────────────────────────────────────────────────────────
 
-def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Dict[str, Any]:
+def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4, dry_run: bool = False) -> Dict[str, Any]:
     """
     Executes the full pipeline and guarantees up to `target_matches` (default 25)
-    unique AI internship listings across 10 platforms.
+    unique AI internship listings across primary portals + LinkedIn fallback.
     """
     run_start = datetime.utcnow()
     email_sent = False
@@ -545,27 +545,34 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4) -> Di
     csv_path = export_jobs_to_csv(final_jobs, output_filename=csv_filename)
 
     email_sent = False
+    whatsapp_sent = False
     if csv_path:
         print(f"   CSV generated at: {csv_path}")
 
-        # ── Email CSV ─────────────────────────────────────────────────────
-        print(f"\n📧 Sending CSV report to {settings.recipient_email} via Gmail API…")
-        email_sent = send_csv_email(csv_path, len(final_jobs))
-        if email_sent:
-            print(f"   ✅ Email delivered successfully to {settings.recipient_email}!")
+        if not dry_run:
+            # ── Email CSV ─────────────────────────────────────────────────────
+            print(f"\n📧 Sending CSV report to {settings.recipient_email} via Gmail API…")
+            email_sent = send_csv_email(csv_path, len(final_jobs))
+            if email_sent:
+                print(f"   ✅ Email delivered successfully to {settings.recipient_email}!")
+            else:
+                print(f"   ⚠️ Email delivery failed or is not configured.")
         else:
-            print(f"   ⚠️ Email delivery failed or is not configured.")
+            print("\n🔒 [DRY RUN] Skipping email delivery.")
 
-    # ── WhatsApp Notification ─────────────────────────────────────────────
-    print(f"\n📱 Sending WhatsApp summary notification…")
-    if settings.whatsapp_from and settings.user_whatsapp_number:
-        whatsapp_sent = send_whatsapp_summary(settings.user_whatsapp_number, final_jobs)
-        if whatsapp_sent:
-            print("   📲 WhatsApp notification sent successfully!")
+    if not dry_run:
+        # ── WhatsApp Notification ─────────────────────────────────────────────
+        print(f"\n📱 Sending WhatsApp summary notification…")
+        if settings.whatsapp_from and settings.user_whatsapp_number:
+            whatsapp_sent = send_whatsapp_summary(settings.user_whatsapp_number, final_jobs)
+            if whatsapp_sent:
+                print("   📲 WhatsApp notification sent successfully!")
+            else:
+                print("   ⚠️ WhatsApp notification failed.")
         else:
-            print("   ⚠️ WhatsApp notification failed.")
+            print("   WhatsApp is not fully configured, skipping notification.")
     else:
-        print("   WhatsApp is not fully configured, skipping notification.")
+        print("🔒 [DRY RUN] Skipping WhatsApp notification.")
 
     # ── Log Run to Database ───────────────────────────────────────────────
     try:
@@ -619,9 +626,15 @@ if __name__ == "__main__":
         default=settings.match_score_threshold,
         help=f"Minimum match score threshold (default: {settings.match_score_threshold})",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Execute scraping and matching without sending email or WhatsApp notifications",
+    )
     args = parser.parse_args()
 
     run(
         target_matches=args.target,
         threshold=args.threshold,
+        dry_run=args.dry_run,
     )
