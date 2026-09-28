@@ -45,32 +45,50 @@ logger = logging.getLogger(__name__)
 def _create_engine_with_fallback():
     """
     Create a SQLAlchemy engine. Falls back to SQLite if PostgreSQL is
-    unavailable (e.g., during local development without PostgreSQL).
+    unavailable (e.g., during local development without PostgreSQL or cloud timeout).
     """
     db_url = settings.database_url
     pool_kwargs: dict = {}
 
     if db_url.startswith("postgresql"):
-        # Supabase / cloud postgres compatibility: ensure sslmode or timeout handling
+        import os
+        from sqlalchemy.pool import NullPool
+
+        # Strict connect_timeout ensures startup never hangs if DB is unreachable
+        connect_args = {
+            "connect_timeout": 5,
+        }
+        if "sslmode" not in db_url:
+            connect_args["sslmode"] = "require"
+
         pool_kwargs = {
-            "pool_size": 5,
-            "max_overflow": 10,
-            "pool_timeout": 30,
-            "pool_recycle": 300,  # recycle connections frequently for Supabase pooler
+            "connect_args": connect_args,
             "pool_pre_ping": True,
         }
+
+        # Supabase transaction pooler (port 6543) requires NullPool to prevent prepared statement conflicts
+        if ":6543" in db_url or "pooler.supabase.com" in db_url:
+            pool_kwargs["poolclass"] = NullPool
+        else:
+            pool_kwargs.update({
+                "pool_size": 5,
+                "max_overflow": 10,
+                "pool_timeout": 5,
+                "pool_recycle": 300,
+            })
+
         try:
+            logger.info("Attempting database connection to PostgreSQL...")
             test_engine = create_engine(db_url, **pool_kwargs)
             with test_engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
-            logger.info("Database engine created → PostgreSQL")
+            logger.info("Database engine created successfully → PostgreSQL")
             return test_engine
         except Exception as e:
             logger.warning(
-                f"PostgreSQL connection failed: {e}\n"
-                f"  → Falling back to SQLite at data/agent.db"
+                f"PostgreSQL connection failed ({e}).\n"
+                f"  → Falling back to SQLite at data/agent.db so server starts immediately."
             )
-            import os
             os.makedirs("data", exist_ok=True)
             db_url = "sqlite:///data/agent.db"
             pool_kwargs = {"connect_args": {"check_same_thread": False}}
@@ -118,26 +136,13 @@ def init_db() -> None:
     """
     Create all database tables defined in db/models.py if they do not
     already exist.
-
     This function is idempotent — it is safe to call multiple times.
-    Run it once on application startup or as a one-off setup command:
-
-        python -c "from db.database import init_db; init_db()"
-
-    Raises:
-        sqlalchemy.exc.OperationalError: If the database is unreachable
-            or the DATABASE_URL is misconfigured.
-
-    Example:
-        >>> init_db()
-        Tables created: ['jobs', 'applications', 'whatsapp_responses']
     """
     logger.info("Initialising database tables…")
     try:
         Base.metadata.create_all(bind=engine)
         table_names = list(Base.metadata.tables.keys())
         logger.info(f"Tables created / verified: {table_names}")
-        print(f"Database tables created: {table_names}")
 
         # Dynamic Schema Auto-Migration: Ensure all model columns exist in physical DB
         from sqlalchemy import inspect
@@ -158,8 +163,7 @@ def init_db() -> None:
                     conn.execute(text("ALTER TABLE jobs ADD COLUMN work_mode VARCHAR(50) DEFAULT 'onsite';"))
                     print("Auto-migration applied: Added 'work_mode' column to jobs table.")
     except Exception as exc:
-        logger.error(f"Failed to create database tables: {exc}", exc_info=True)
-        raise
+        logger.error(f"Database initialisation warning: {exc}")
 
 
 def drop_db() -> None:
