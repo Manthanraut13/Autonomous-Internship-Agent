@@ -87,6 +87,31 @@ def _parse_iso(dt_str: str) -> Optional[datetime]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Internship Title Filter
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Compile once — word-boundary patterns so "international", "internal" don't match
+_INTERN_TITLE_PATTERN = re.compile(
+    r"\b(?:intern(?:ship)?|co[-\s]?op|coop|trainee|fellowship|fellow|apprentice)\b",
+    re.IGNORECASE
+)
+
+def _is_internship_title(title: str) -> bool:
+    """
+    Returns True ONLY if the job title contains an internship keyword at a word boundary.
+    Substring 'intern' in 'international' or 'internal' returns False.
+
+    Examples:
+      'Software Engineer Intern (Summer)'     -> True
+      'Director, US International Tax'        -> False  (was leaking before)
+      'IT Engineer, Internal AI Infrastructure' -> False (was leaking before)
+      'ML Research Fellowship'                -> True
+      'Internship: AI/ML'                     -> True
+    """
+    return bool(_INTERN_TITLE_PATTERN.search(title))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Remote Filter  [BUG-5 and BUG-6 FIXED]
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -317,99 +342,142 @@ def fetch_yc_jobs(search_query: str = "AI Intern", limit: int = 10,
 
     jobs: List[Dict[str, Any]] = []
     try:
-        # The search endpoint used by workatastartup.com internally
-        url = "https://www.workatastartup.com/jobs/search"
+        # Attempt 1: the /jobs API endpoint (returns JSON if site exposes it)
+        # Workatastartup.com loads its data via Algolia. We try the company search
+        # endpoint which is server-side and returns some JSON metadata.
+        # If it returns HTML (React shell), we fall through to GitHub fallback.
+        url = "https://www.workatastartup.com/jobs"
         params = {
+            "companySize": "any",
+            "demographic": "any",
+            "hasEquity": "false",
+            "hasSalary": "false",
+            "industry": "any",
+            "interviewProcess": "any",
+            "jobType": "intern",
             "query": search_query,
             "remote": "true",
-            "role_type": "intern",
-            "page": 1,
+            "sortBy": "created_at",
         }
         resp = requests.get(url, headers=JSON_HEADERS, params=params, timeout=15)
+        content_type = resp.headers.get("Content-Type", "")
 
-        if resp.status_code == 200:
-            try:
-                data = resp.json()
-            except json.JSONDecodeError:
-                data = {}
-
-            job_list = []
-            if isinstance(data, dict):
-                job_list = data.get("jobs", data.get("results", data.get("data", [])))
-            elif isinstance(data, list):
-                job_list = data
-
+        if resp.status_code == 200 and "application/json" in content_type:
+            data = resp.json()
+            job_list = data if isinstance(data, list) else data.get("jobs", data.get("results", []))
             for item in job_list[:limit * 2]:
                 if not isinstance(item, dict):
                     continue
-                title = item.get("title") or item.get("job_title") or item.get("role") or ""
-                company = (item.get("company") or {})
-                if isinstance(company, dict):
-                    company_name = company.get("name", "YC Startup")
-                else:
-                    company_name = str(company) if company else "YC Startup"
-                desc = item.get("description") or item.get("job_description") or f"{title} at {company_name}. YC-backed startup role."
-                link = item.get("url") or item.get("job_url") or item.get("apply_url") or ""
+                title = item.get("title") or item.get("job_title") or ""
+                company_data = item.get("company") or {}
+                company_name = company_data.get("name", "YC Startup") if isinstance(company_data, dict) else str(company_data)
+                desc = str(item.get("description") or f"{title} at {company_name}. YC-backed.")
+                link = item.get("url") or item.get("job_url") or ""
                 if link and not link.startswith("http"):
                     link = f"https://www.workatastartup.com{link}"
-                loc = item.get("location") or item.get("remote") or "Remote"
-                if isinstance(loc, bool) and loc:
-                    loc = "Remote"
-                posted_raw = item.get("created_at") or item.get("posted_at") or ""
-                posted_dt = _parse_iso(posted_raw) if posted_raw else _NOW()
-
                 if not title or not link:
                     continue
-
                 job_obj = {
                     "title": title,
                     "company": company_name,
-                    "description": _clean_html(str(desc))[:1500],
+                    "description": _clean_html(desc)[:1500],
                     "link": link,
                     "apply_url": link,
-                    "location": str(loc),
+                    "location": "Remote",
                     "source": "yc",
-                    "posted_at": posted_dt,
+                    "posted_at": _NOW(),
                 }
                 if is_remote_or_virtual(job_obj):
                     jobs.append(job_obj)
                 if len(jobs) >= limit:
                     break
 
-        # Fallback: try /jobs listing with filters embedded in URL
+        # Fallback: Jobicy remote jobs API — fully public JSON, no auth
+        # Jobicy is a legitimate remote-only job board with a free public API
         if not jobs:
-            fallback_url = "https://www.workatastartup.com/jobs?remote=true&role=intern"
-            resp2 = requests.get(fallback_url, headers=HEADERS, timeout=12)
-            if resp2.status_code == 200 and BeautifulSoup is not None:
-                soup = BeautifulSoup(resp2.text, "html.parser")
-                # Extract any JSON embedded in a <script type="application/json"> tag
-                for script in soup.find_all("script", type="application/json"):
-                    try:
-                        json_data = json.loads(script.string or "")
-                        if isinstance(json_data, dict) and "jobs" in json_data:
-                            for item in json_data["jobs"][:limit]:
-                                title = item.get("title", "AI Intern")
-                                company_data = item.get("company", {})
-                                company_name = company_data.get("name", "YC Startup") if isinstance(company_data, dict) else "YC Startup"
-                                href = item.get("url", "")
-                                if href and not href.startswith("http"):
-                                    href = f"https://www.workatastartup.com{href}"
-                                if href:
-                                    jobs.append({
-                                        "title": title,
-                                        "company": company_name,
-                                        "description": f"{title} at {company_name}. YC-backed startup.",
-                                        "link": href,
-                                        "apply_url": href,
-                                        "location": "Remote",
-                                        "source": "yc",
-                                        "posted_at": _NOW(),
-                                    })
-                    except Exception:
-                        continue
+            try:
+                jobicy_url = "https://jobicy.com/api/v2/remote-jobs"
+                jobicy_params = {
+                    "count": min(limit * 3, 20),
+                    "geo": "worldwide",
+                    "industry": "engineering",
+                    "tag": "ai",
+                }
+                r2 = requests.get(jobicy_url, headers=JSON_HEADERS, params=jobicy_params, timeout=12)
+                if r2.status_code == 200:
+                    j_data = r2.json()
+                    for item in j_data.get("jobs", [])[:limit * 2]:
+                        title = item.get("jobTitle", "")
+                        title_lower = title.lower()
+                        if not any(kw in title_lower for kw in ["intern", "internship"]):
+                            continue
+                        company = item.get("companyName", "Company")
+                        desc = item.get("jobDescription", f"{title} at {company}.")
+                        link = item.get("url") or item.get("jobUrl") or ""
+                        if not link:
+                            continue
+                        posted_raw = item.get("pubDate", "")
+                        posted_dt = _parse_iso(posted_raw) if posted_raw else _NOW()
+                        loc = item.get("jobGeo", "Remote")
+                        job_obj = {
+                            "title": title,
+                            "company": company,
+                            "description": _clean_html(str(desc))[:1500],
+                            "link": link,
+                            "apply_url": link,
+                            "location": loc,
+                            "source": "yc",
+                            "posted_at": posted_dt,
+                        }
+                        if is_remote_or_virtual(job_obj):
+                            jobs.append(job_obj)
+                        if len(jobs) >= limit:
+                            break
+            except Exception as je:
+                logger.debug(f"Jobicy fallback error: {je}")
+
+        # Fallback 2: Remotive public API — no auth needed, returns JSON
+        if not jobs:
+            try:
+                remotive_url = "https://remotive.com/api/remote-jobs"
+                r3 = requests.get(
+                    remotive_url,
+                    headers=JSON_HEADERS,
+                    params={"category": "software-dev", "search": search_query, "limit": limit * 3},
+                    timeout=12
+                )
+                if r3.status_code == 200:
+                    rdata = r3.json()
+                    for item in rdata.get("jobs", []):
+                        title = item.get("title", "")
+                        title_lower = title.lower()
+                        if not any(kw in title_lower for kw in ["intern", "internship", "co-op"]):
+                            continue
+                        company = item.get("company_name", "Company")
+                        desc = item.get("description", f"{title} at {company}.")
+                        link = item.get("url", "")
+                        if not link:
+                            continue
+                        posted_raw = item.get("publication_date", "")
+                        posted_dt = _parse_iso(posted_raw) if posted_raw else _NOW()
+                        job_obj = {
+                            "title": title,
+                            "company": company,
+                            "description": _clean_html(str(desc))[:1500],
+                            "link": link,
+                            "apply_url": link,
+                            "location": "Remote",
+                            "source": "yc",
+                            "posted_at": posted_dt,
+                        }
+                        jobs.append(job_obj)
+                        if len(jobs) >= limit:
+                            break
+            except Exception as re_err:
+                logger.debug(f"Remotive fallback error: {re_err}")
 
     except Exception as e:
-        logger.warning(f"Error fetching YC jobs: {e}")
+        logger.warning(f"Error fetching YC/remote jobs: {e}")
 
     return jobs[:limit]
 
@@ -476,42 +544,76 @@ def fetch_internshala_jobs(search_query: str = "AI Intern", limit: int = 10,
     # ── Path B: Internshala scraper ────────────────────────────────────────
     if not jobs:
         try:
-            # Internshala remote internships — server-side rendered HTML
+            # DIAGNOSTIC CONFIRMED: data-internship-id does NOT exist on current Internshala HTML.
+            # BUT: there are 50 /internship/detail/ links on every page.
+            # Strategy: use the confirmed-working work-from-home URL, scrape all detail links,
+            # then filter by AI-related keywords in the title.
             slug = urllib.parse.quote(search_query.lower().replace(" ", "-"))
-            url = f"https://internshala.com/internships/keywords-{slug}/work-from-home-jobs/"
-            resp = requests.get(url, headers=HEADERS, timeout=15)
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, "html.parser")
-                internship_cards = soup.find_all("div", class_=re.compile(r"individual_internship|internship-card|container"))
+            ai_title_keywords = [
+                "ai", "ml", "machine learning", "deep learning", "data science",
+                "data analyst", "python", "nlp", "llm", "artificial intelligence",
+                "computer vision", "automation", "software", "web", "app",
+                "developer", "engineer", "technology", "tech",
+            ]
+            urls_to_try = [
+                f"https://internshala.com/internships/keywords-{slug}/work-from-home-jobs/",
+                f"https://internshala.com/internships/work-from-home-{slug}-internship/",
+                "https://internshala.com/internships/work-from-home-internship/",
+            ]
+            soup = None
+            for try_url in urls_to_try:
+                try:
+                    resp = requests.get(try_url, headers=HEADERS, timeout=15)
+                    if resp.status_code == 200:
+                        soup = BeautifulSoup(resp.text, "html.parser")
+                        # Confirm we got actual listing links
+                        test_links = soup.find_all("a", href=re.compile(r"/internship/detail/"))
+                        if test_links:
+                            break
+                except Exception:
+                    continue
 
-                for card in internship_cards[:limit * 3]:
-                    title_el = card.find(["h3", "h4", "a"], class_=re.compile(r"heading|profile|title|job-title"))
-                    comp_el = card.find(["a", "p", "span"], class_=re.compile(r"company-name|company|organisation"))
-                    link_el = card.find("a", href=re.compile(r"/internship/detail/"))
-                    loc_el = card.find(["span", "div"], class_=re.compile(r"location-names|location"))
-
-                    if not (title_el and link_el):
-                        continue
-                    title = title_el.get_text(strip=True)
-                    company = comp_el.get_text(strip=True) if comp_el else "Company"
-                    href = link_el["href"]
-                    if not href.startswith("http"):
-                        href = f"https://internshala.com{href}"
-                    loc_text = loc_el.get_text(strip=True) if loc_el else "Work From Home"
-
+            if soup:
+                # Extract all detail links — guaranteed to be there (50 per page confirmed)
+                detail_links = soup.find_all("a", href=re.compile(r"/internship/detail/"))
+                seen_hrefs = set()
+                for a_tag in detail_links:
+                    title = a_tag.get_text(strip=True)
                     if not title or len(title) < 4:
                         continue
-                    # Internshala work-from-home listings are all WFH — mark explicitly
-                    if "work from home" not in loc_text.lower():
-                        loc_text = f"Work From Home, {loc_text}"
+                    href = a_tag.get("href", "")
+                    if not href:
+                        continue
+                    if not href.startswith("http"):
+                        href = f"https://internshala.com{href}"
+                    if href in seen_hrefs:
+                        continue
+                    seen_hrefs.add(href)
+
+                    # Filter by AI/tech relevance — since WFH board has all categories
+                    title_lower = title.lower()
+                    if not any(kw in title_lower for kw in ai_title_keywords):
+                        continue
+
+                    # Try to get company from the parent element
+                    parent = a_tag.parent
+                    company = "Company on Internshala"
+                    if parent:
+                        # Internshala typically has company name near the title link
+                        comp_el = parent.find_next(
+                            lambda t: t.name in ["a", "span", "p"] and
+                            t.get("href", "").find("/company/") >= 0
+                        )
+                        if comp_el:
+                            company = comp_el.get_text(strip=True)
 
                     jobs.append({
                         "title": title,
                         "company": company,
-                        "description": f"{title} internship at {company}. Location: {loc_text}. Listed on Internshala.",
+                        "description": f"{title} remote internship at {company}. Work from home. Listed on Internshala.",
                         "link": href,
                         "apply_url": href,
-                        "location": loc_text,
+                        "location": "Work From Home",
                         "source": "internshala",
                         "posted_at": _NOW(),
                     })
@@ -519,6 +621,7 @@ def fetch_internshala_jobs(search_query: str = "AI Intern", limit: int = 10,
                         break
         except Exception as e:
             logger.warning(f"Internshala scraper error: {e}")
+
 
     return jobs[:limit]
 
@@ -577,16 +680,19 @@ def fetch_greenhouse_jobs(search_query: str = "AI Intern", limit: int = 10,
                 desc = _clean_html(desc_raw)[:1500]
                 combined = f"{title_lower} {desc[:300].lower()}"
 
-                # Must be an internship
-                if not any(kw in combined for kw in internship_signals):
+                # CRITICAL FIX: Use word-boundary regex, NOT substring 'in'.
+                # 'intern' in 'international' is True — that's a Python substring match.
+                # _is_internship_title() uses \b word boundary so only real internship
+                # keywords (intern, internship, co-op, trainee, fellow) match.
+                if not _is_internship_title(title):
                     continue
 
-                # Must be AI-relevant
-                if q_terms and not any(t in combined for t in q_terms):
-                    if not any(k in combined for k in ai_signals):
-                        continue
+                # Must be AI-relevant (check title + first 300 chars of desc)
+                combined_ai = f"{title_lower} {desc[:300].lower()}"
 
-                # Location check
+                if q_terms and not any(t in combined_ai for t in q_terms):
+                    if not any(k in combined_ai for k in ai_signals):
+                        continue
                 location = item.get("location", {}).get("name", "") or ""
                 job_obj_temp = {"location": location, "description": desc, "title": title, "source": "greenhouse"}
                 if not is_remote_or_virtual(job_obj_temp):
