@@ -1,0 +1,11 @@
+Priority,Platform Name,Direct Link,Platform Purpose & Tailored Fit
+1,Internshala (India Tech & AI),https://internshala.com,"Primary Indian portal for AI/ML/Data internships and entry-level developer roles across major Indian tech hubs."
+1,Peerlist (Builders & Startups),https://peerlist.io/jobs,"Professional network for Indian tech founders and builders. Direct application links to verified AI and engineering openings."
+1,Wellfound (AngelList Talent),https://wellfound.com/location/india,"Direct access to Indian Seed and Series A/B AI startups and founders hiring engineers for live production agents."
+1,Y Combinator Work at a Startup & HN,https://www.workatastartup.com,"High-growth YC-backed startups hiring AI/ML engineers. Emphasizes GitHub repos, live MVPs, and production agent workflows."
+2,Greenhouse.io Public ATS Boards,https://boards-api.greenhouse.io,"Direct job board ingestion from modern tech startups and AI product companies with an engineering presence in India."
+2,SimplifyJobs GitHub Tracker,https://github.com/SimplifyJobs/Summer2026-Internships,"Real-time, crowdsourced repository tracking technical internship openings minutes after they go live on Lever and Greenhouse."
+2,Pittcsc Summer Internships Tracker,https://github.com/pittcsc/Summer2026-Internships,"Crowdsourced tracker for software engineering and machine learning summer internship openings with verified application links."
+Fallback,LinkedIn India (Reserve Fallback Node),https://www.linkedin.com/jobs/search,"Guaranteed fallback node activated only if primary scrapers yield fewer than 25 qualified openings."
+Seasonal,MLH Fellowship,https://fellowship.mlh.io,"12-week remote open-source and software engineering fellowship backed by major tech firms. Compensated educational stipend."
+Seasonal,Google Summer of Code (GSoC),https://summerofcode.withgoogle.com,"Global, paid open-source internship program pairing contributors with production-grade codebases and maintainers."

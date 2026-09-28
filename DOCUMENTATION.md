@@ -22,9 +22,8 @@
    - [6.2 `db/models.py` — ORM Data Models & Enums](#62-dbmodelspy--orm-data-models--enums)
    - [6.3 Cross-Run Deduplication Mechanism](#63-cross-run-deduplication-mechanism)
 7. [Job Ingestion & Scraper Architecture](#7-job-ingestion--scraper-architecture)
-   - [7.1 Priority Order & Top 3 Platform Hierarchy](#71-priority-order--top-3-platform-hierarchy)
+   - [7.1 Priority Order & Top Platform Hierarchy](#71-priority-order--top-platform-hierarchy)
    - [7.2 `tools/job_api.py` — Multi-Source Scraping Engine](#72-toolsjob_apipy--multi-source-scraping-engine)
-   - [7.3 `tools/apollo_scraper.py` — Fallback Ingestion Engine](#73-toolsapollo_scraperpy--fallback-ingestion-engine)
 8. [Resume Intelligence & LLM Scoring](#8-resume-intelligence--llm-scoring)
    - [8.1 `tools/resume_parser.py` — Multi-Engine PDF Extraction](#81-toolsresume_parserpy--multi-engine-pdf-extraction)
    - [8.2 `tools/jd_matcher.py` — Groq LLM Evaluation & Fallback Cascade](#82-toolsjd_matcherpy--groq-llm-evaluation--fallback-cascade)
@@ -153,12 +152,13 @@ Autonomous-Internship-Agent/
 │   └── screen.png                  # Visual design render snapshot
 ├── tools/
 │   ├── __init__.py                 # Package initializer
-│   ├── apollo_scraper.py           # Fallback Apollo API / HTML scraper
 │   ├── csv_exporter.py             # CSV spreadsheet generator & file formatter
-│   ├── email_sender.py             # Gmail OAuth 2.0 & SendGrid email dispatchers
+│   ├── email_sender.py             # Multi-tier email delivery (Gmail SMTP & OAuth 2.0)
+│   ├── jd_fetcher.py               # Full job description text enricher
 │   ├── jd_matcher.py               # Groq LLM JD-Resume evaluation & multi-model fallback
-│   ├── job_api.py                  # Scraper cascade (LinkedIn, Remotive, Himalayas)
+│   ├── job_api.py                  # Scraper cascade (Wellfound, YC, Peerlist, Internshala, etc.)
 │   ├── resume_parser.py            # PDF parsing & dynamic AI search query generator
+│   ├── semantic_matcher.py         # Embedding-based cosine similarity pre-filter
 │   └── whatsapp_handler.py         # Twilio WhatsApp alert formatter & sender
 ├── .env.example                    # Sample environment template with documentation
 ├── .gitignore                      # Git exclusion rules (venv, node_modules, keys, DB)

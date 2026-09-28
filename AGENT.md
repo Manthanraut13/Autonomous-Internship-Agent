@@ -1894,53 +1894,48 @@ class JobScheduler:
             )
             self._send_job_failure_alert(job_id, str(e))
     
-    def job_apply_approved(self):
+    def job_export_and_dispatch(self):
         """
-        Apply to all user-approved jobs.
+        Export daily qualified jobs to CSV and dispatch to user.
         
-        Runs daily at 12 PM.
-        Finds approved jobs waiting for application.
-        Uses Selenium to auto-fill and submit applications.
+        Runs daily after pipeline completion.
+        Generates structured CSV with direct apply URLs.
+        Delivers via Gmail SMTP / OAuth 2.0 and sends WhatsApp notification.
         """
         
-        job_id = "apply_approved"
+        job_id = "export_and_dispatch"
         start_time = datetime.now()
         
         try:
-            logger.info(f"[{job_id}] Starting auto-apply at {start_time}")
+            logger.info(f"[{job_id}] Starting daily CSV export and dispatch at {start_time}")
             
-            from app.applications.auto_apply import AutoApplier
-            from app.database import get_db
+            from tools.csv_exporter import export_jobs_to_csv
+            from tools.email_sender import send_csv_email
+            from tools.whatsapp_handler import send_whatsapp_summary
+            from db.database import get_db_context
+            from db.models import Job
             
-            db = next(get_db())
-            applier = AutoApplier()
+            with get_db_context() as db:
+                # Retrieve qualified matches from today's run
+                qualified_jobs = db.query(Job).filter(
+                    Job.match_score >= 70,
+                    Job.status.in_(["matched", "approved"])
+                ).order_by(Job.match_score.desc()).limit(25).all()
+                
+                job_dicts = [j.to_dict() for j in qualified_jobs]
             
-            # Get approved jobs
-            approved_apps = db.query(ApplicationRecord).filter_by(
-                status='approved',
-                application_timestamp=None
-            ).all()
-            
-            successful = 0
-            failed = 0
-            
-            for app in approved_apps:
-                try:
-                    result = applier.apply(app.job.url)
-                    if result['status'] == 'success':
-                        successful += 1
-                    else:
-                        failed += 1
-                except Exception as e:
-                    logger.warning(f"Failed to apply: {e}")
-                    failed += 1
-            
-            duration = (datetime.now() - start_time).total_seconds()
-            
-            logger.info(
-                f"[{job_id}] ✅ COMPLETED in {duration:.2f}s. "
-                f"Successful: {successful}, Failed: {failed}"
-            )
+            if job_dicts:
+                csv_path = export_jobs_to_csv(job_dicts)
+                email_sent = send_csv_email(csv_path, len(job_dicts))
+                send_whatsapp_summary(settings.user_whatsapp_number, job_dicts)
+                
+                duration = (datetime.now() - start_time).total_seconds()
+                logger.info(
+                    f"[{job_id}] ✅ COMPLETED in {duration:.2f}s. "
+                    f"Dispatched {len(job_dicts)} jobs (Email status: {email_sent})"
+                )
+            else:
+                logger.info(f"[{job_id}] No new qualified jobs to dispatch today.")
         
         except Exception as e:
             duration = (datetime.now() - start_time).total_seconds()

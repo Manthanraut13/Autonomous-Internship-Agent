@@ -1,31 +1,21 @@
 """
 tools/job_api.py
 ----------------
-Fetches real, live AI internship listings from 10 priority platforms.
+Fetches real, live AI listings strictly located in India across verified platforms.
 
-Platform Priority Order (LinkedIn + 9 from list.csv):
-  1. LinkedIn              — Direct startup AI internships (Quota: 7)
-  2. Wellfound             — AngelList Talent, startup founders (Quota: 3)
-  3. Y Combinator          — Workatastartup JSON API (Quota: 3)
-  4. Internshala / Adzuna  — Remote internship board (Quota: 3)
-  5. Greenhouse.io Boards  — Startup ATS public API (Quota: 3)
-  6. SimplifyJobs GitHub   — Crowdsourced tracker (Quota: 3)
-  7. Pittcsc GitHub Tracker — Summer2026 internship list (Quota: 2)
-  8. MLH Fellowship        — Conditional on open application window (Quota: 1)
-  9. GSoC                  — Conditional on open application window (Quota: 1)
-  10. Outreachy             — Conditional on open application window (Quota: 1)
+Primary Platforms (Quotas total 25):
+  1. Internshala           — India tech & AI internships (Quota: 8)
+  2. Peerlist              — Indian tech founders & modern startups (Quota: 4)
+  3. Wellfound             — AngelList Talent startup ecosystem in India (Quota: 4)
+  4. Y Combinator          — Hacker News Algolia Job Search & WAAS (Quota: 3)
+  5. Greenhouse.io Boards  — Public ATS boards for tech companies in India (Quota: 3)
+  6. SimplifyJobs GitHub   — Real-time crowdsourced tech tracker (Quota: 2)
+  7. Pittcsc GitHub Tracker— Summer internship repository (Quota: 1)
 
-Total hard target: 25 listings across minimum 4 platforms.
+Fallback Reserve Node:
+  LinkedIn Guest API       — Activated only if primary portals yield < 25 qualified openings.
 
-BUG FIXES APPLIED:
-  BUG-5: Removed fake "(Remote Option)" label from LinkedIn jobs.
-  BUG-6: Removed "hybrid" from remote_keywords — hybrid ≠ remote.
-  BUG-7: All scrapers now emit real datetime objects for posted_at.
-  BUG-1: YC scraper replaced with Workatastartup JSON API.
-  BUG-2: Peerlist (broken Next.js SPA) replaced with Internshala + Adzuna API.
-  BUG-3: Otta (Cloudflare-protected) replaced with Greenhouse.io boards API.
-  BUG-4: Levels.fyi (client-side JS table) replaced with pittcsc GitHub tracker.
-  BUG-12: MLH/GSoC/Outreachy now return 0 entries if applications are not open.
+Total hard target: 25 qualified, unique India listings.
 """
 
 import json
@@ -48,14 +38,16 @@ logger = logging.getLogger(__name__)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
 }
 
 JSON_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.5",
     "Content-Type": "application/json",
 }
 
@@ -70,20 +62,53 @@ def _clean_html(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()[:1500]
 
 
-def _parse_iso(dt_str: str) -> Optional[datetime]:
-    """Parse ISO-8601 or date-only strings to tz-aware datetime."""
-    if not dt_str:
+def parse_job_date(val: Optional[str]) -> Optional[datetime]:
+    """
+    Parses ISO-8601, standard dates, or relative age strings to a tz-aware datetime.
+    Returns None if missing or unparseable. NEVER manufactures fake timestamps.
+    """
+    if not val or not isinstance(val, str):
         return None
+    val = val.strip().lower()
+    if val in ("just now", "today", "few hours ago", "active today"):
+        return _NOW()
+    if val in ("yesterday", "1d", "1 day ago"):
+        return _NOW() - timedelta(days=1)
+
+    # Relative short format e.g. '2d', '3h', '1w', '2m'
+    short_m = re.match(r"^(\d+)\s*([hdwmy])$", val)
+    if short_m:
+        num, unit = int(short_m.group(1)), short_m.group(2)
+        if unit == "h": return _NOW() - timedelta(hours=num)
+        if unit == "d": return _NOW() - timedelta(days=num)
+        if unit == "w": return _NOW() - timedelta(weeks=num)
+        if unit == "m": return _NOW() - timedelta(days=num * 30)
+        if unit == "y": return _NOW() - timedelta(days=num * 365)
+
+    # Relative verbose format e.g. '5 days ago', '2 weeks ago', '3 hours ago'
+    rel_m = re.search(r"(\d+)\s+(hour|day|week|month|year)s?\s+ago", val)
+    if rel_m:
+        num, unit = int(rel_m.group(1)), rel_m.group(2)
+        if unit == "hour": return _NOW() - timedelta(hours=num)
+        if unit == "day": return _NOW() - timedelta(days=num)
+        if unit == "week": return _NOW() - timedelta(weeks=num)
+        if unit == "month": return _NOW() - timedelta(days=num * 30)
+        if unit == "year": return _NOW() - timedelta(days=num * 365)
+
+    # ISO-8601 and calendar date strings
     for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ",
-                "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d"):
+                "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d", "%b %d, %Y", "%b %d"):
         try:
-            dt = datetime.strptime(dt_str[:26], fmt)
+            dt = datetime.strptime(val[:26], fmt)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt
         except ValueError:
             continue
+
     return None
+
+_parse_iso = parse_job_date  # Backward compatibility alias
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -284,8 +309,8 @@ def fetch_linkedin_jobs(search_query: str = "AI Engineer", location: str = "Indi
                     company = comp_el.text.strip() if comp_el else "Unknown Company"
                     job_link = link_el["href"].split("?")[0]
                     job_loc = loc_el.text.strip() if loc_el else location
-                    posted_at_str = time_el["datetime"] if time_el and time_el.get("datetime") else ""
-                    posted_dt = _parse_iso(posted_at_str) if posted_at_str else _NOW()
+                    posted_at_str = time_el["datetime"] if time_el and time_el.get("datetime") else (time_el.text.strip() if time_el else "")
+                    posted_dt = parse_job_date(posted_at_str)
 
                     title_lower = title.lower()
                     if any(disq in title_lower for disq in executive_disqualifiers):
@@ -321,14 +346,21 @@ def fetch_linkedin_jobs(search_query: str = "AI Engineer", location: str = "Indi
 # ---------------------------------------------------------------------------
 def fetch_wellfound_jobs(search_query: str = "AI Engineer", limit: int = 10,
                          posted_within_hours: int = 168) -> List[Dict[str, Any]]:
-    """Scrapes Wellfound for startup AI roles located in India."""
+    """
+    Scrapes Wellfound for live startup AI roles located in India.
+    Extracts semantic job cards, company relationships, and verified publication dates.
+    """
     if requests is None or BeautifulSoup is None:
         return []
 
     jobs: List[Dict[str, Any]] = []
+    seen_links = set()
+    cutoff = _NOW() - timedelta(hours=posted_within_hours)
+
     try:
-        # Check India location hub directly on Wellfound
         urls_to_try = [
+            "https://wellfound.com/role/l/ai-engineer/india",
+            "https://wellfound.com/role/l/machine-learning-engineer/india",
             "https://wellfound.com/location/india",
             f"https://wellfound.com/role/r/{urllib.parse.quote(search_query.lower().replace(' ', '-'))}"
         ]
@@ -342,39 +374,62 @@ def fetch_wellfound_jobs(search_query: str = "AI Engineer", limit: int = 10,
                     continue
 
                 soup = BeautifulSoup(resp.text, "html.parser")
-                job_cards = soup.find_all("div", class_=re.compile(r"styles_result|jobCard|job-card|listing"))
+                job_links = soup.find_all("a", href=re.compile(r"^/jobs/\d+"))
 
-                for card in job_cards:
-                    title_el = card.find(["h2", "h3", "a"], class_=re.compile(r"title|name"))
-                    comp_el = card.find(["span", "a", "h4"], class_=re.compile(r"company|startup"))
-                    link_el = card.find("a", href=re.compile(r"/jobs/")) or card.find("a", href=True)
-                    loc_el = card.find(["span", "div", "p"], class_=re.compile(r"location|city"))
+                for jl in job_links:
+                    href = jl.get("href", "")
+                    if not href.startswith("http"):
+                        href = f"https://wellfound.com{href}"
+                    if href in seen_links:
+                        continue
 
-                    if title_el and link_el:
-                        title = title_el.get_text(strip=True)
-                        company = comp_el.get_text(strip=True) if comp_el else "Wellfound Startup"
-                        href = link_el["href"]
-                        if not href.startswith("http"):
-                            href = f"https://wellfound.com{href}"
+                    title = jl.get_text(strip=True)
+                    if not title or len(title) < 3:
+                        continue
 
-                        loc = loc_el.get_text(strip=True) if loc_el else "India"
-                        desc_el = card.find(["p", "div"], class_=re.compile(r"desc|detail|snippet"))
-                        desc = desc_el.get_text(strip=True) if desc_el else f"{title} at {company}. Location: {loc}."
+                    # Find parent company container
+                    card = jl.find_parent("div", class_=re.compile(r"mb-|rounded|border|card"))
+                    company = "Wellfound Startup"
+                    loc = "India"
+                    date_text = None
 
-                        job_obj = {
-                            "title": title,
-                            "company": company,
-                            "description": desc[:1500],
-                            "link": href,
-                            "apply_url": href,
-                            "location": loc,
-                            "source": "wellfound",
-                            "posted_at": _NOW(),
-                        }
-                        if is_located_in_india(job_obj):
-                            jobs.append(job_obj)
-                            if len(jobs) >= limit:
-                                break
+                    if card:
+                        comp_el = card.find("a", href=re.compile(r"^/company/"))
+                        if comp_el and comp_el.get_text(strip=True):
+                            company = comp_el.get_text(strip=True)
+
+                        loc_el = card.find(["span", "div", "p"], class_=re.compile(r"location|city"))
+                        if loc_el and loc_el.get_text(strip=True):
+                            loc = loc_el.get_text(strip=True)
+
+                        date_match = re.search(
+                            r"(\d+\s+(?:days?|hours?|weeks?|months?)\s+ago|active\s+today|today|just\s+now)",
+                            card.get_text(), re.IGNORECASE
+                        )
+                        if date_match:
+                            date_text = date_match.group(1)
+
+                    posted_dt = parse_job_date(date_text)
+                    if posted_dt and posted_dt < cutoff:
+                        continue
+
+                    job_obj = {
+                        "title": title,
+                        "company": company,
+                        "description": f"{title} position at {company}. Location: {loc}. Sourced from Wellfound India.",
+                        "link": href,
+                        "apply_url": href,
+                        "location": loc,
+                        "source": "wellfound",
+                        "posted_at": posted_dt,
+                    }
+
+                    if is_located_in_india(job_obj):
+                        seen_links.add(href)
+                        jobs.append(job_obj)
+                        if len(jobs) >= limit:
+                            break
+
             except Exception as e:
                 logger.debug(f"Wellfound URL error ({url}): {e}")
 
@@ -385,65 +440,119 @@ def fetch_wellfound_jobs(search_query: str = "AI Engineer", limit: int = 10,
 
 
 # ---------------------------------------------------------------------------
-# 2. Y Combinator — Workatastartup JSON API
+# 2. Y Combinator — Live Algolia Job Search & WAAS Parser
 # ---------------------------------------------------------------------------
 def fetch_yc_jobs(search_query: str = "AI Engineer", limit: int = 10,
                   posted_within_hours: int = 168) -> List[Dict[str, Any]]:
     """
-    Queries Workatastartup.com via its search API for AI openings in India.
+    Fetches real YC startup AI openings using the official Hacker News Algolia Job Search API
+    and Workatastartup.com structured Inertia data. Extracts verified timestamps and direct links.
     """
     if requests is None:
         return []
 
     jobs: List[Dict[str, Any]] = []
-    try:
-        url = "https://www.workatastartup.com/jobs"
-        params = {
-            "companySize": "any",
-            "demographic": "any",
-            "hasEquity": "false",
-            "hasSalary": "false",
-            "industry": "any",
-            "interviewProcess": "any",
-            "query": search_query,
-            "sortBy": "created_at",
-        }
-        resp = requests.get(url, headers=JSON_HEADERS, params=params, timeout=15)
-        content_type = resp.headers.get("Content-Type", "")
+    seen_links = set()
+    cutoff = _NOW() - timedelta(hours=posted_within_hours)
 
-        if resp.status_code == 200 and "application/json" in content_type:
-            data = resp.json()
-            job_list = data if isinstance(data, list) else data.get("jobs", data.get("results", []))
-            for item in job_list[:limit * 3]:
-                if not isinstance(item, dict):
+    # ── Path A: Hacker News Algolia API (Official YC Startup hiring with ISO dates) ──
+    try:
+        algolia_url = "https://hn.algolia.com/api/v1/search_by_date"
+        params = {
+            "tags": "job",
+            "query": search_query,
+            "hitsPerPage": min(limit * 3, 30)
+        }
+        resp = requests.get(algolia_url, params=params, headers=HEADERS, timeout=12)
+        if resp.status_code == 200:
+            hits = resp.json().get("hits", [])
+            for h in hits:
+                title = h.get("title", "")
+                url = h.get("url") or f"https://news.ycombinator.com/item?id={h.get('objectID')}"
+                if not url or url in seen_links or not title:
                     continue
-                title = item.get("title") or item.get("job_title") or ""
-                company_data = item.get("company") or {}
-                company_name = company_data.get("name", "YC Startup") if isinstance(company_data, dict) else str(company_data)
-                desc = str(item.get("description") or f"{title} at {company_name}. YC-backed.")
-                link = item.get("url") or item.get("job_url") or ""
-                if link and not link.startswith("http"):
-                    link = f"https://www.workatastartup.com{link}"
-                if not title or not link:
+
+                # Parse company name from title e.g. "Stable (YC W20) Is Hiring..."
+                company_match = re.match(r"^([^(\n]+?)(?:\s*\(YC|\s+is\s+hiring)", title, re.IGNORECASE)
+                company = company_match.group(1).strip() if company_match else "YC Startup"
+
+                created_at_str = h.get("created_at")
+                posted_dt = parse_job_date(created_at_str)
+                if posted_dt and posted_dt < cutoff:
                     continue
-                loc = str(item.get("location") or "India")
+
                 job_obj = {
                     "title": title,
-                    "company": company_name,
-                    "description": _clean_html(desc)[:1500],
-                    "link": link,
-                    "apply_url": link,
-                    "location": loc,
+                    "company": company,
+                    "description": f"{title}. YC-backed startup. Apply at: {url}",
+                    "link": url,
+                    "apply_url": url,
+                    "location": "India",
                     "source": "yc",
-                    "posted_at": _NOW(),
+                    "posted_at": posted_dt,
                 }
-                if is_located_in_india(job_obj):
-                    jobs.append(job_obj)
-                if len(jobs) >= limit:
-                    break
 
+                if is_located_in_india(job_obj):
+                    seen_links.add(url)
+                    jobs.append(job_obj)
+                    if len(jobs) >= limit:
+                        return jobs[:limit]
     except Exception as e:
-        logger.warning(f"Error fetching YC jobs: {e}")
+        logger.warning(f"Error querying YC HN Algolia API: {e}")
+
+    # ── Path B: Workatastartup.com Structured Inertia Data ──────────────
+    if len(jobs) < limit:
+        try:
+            waas_url = "https://www.workatastartup.com/jobs"
+            resp = requests.get(waas_url, headers=HEADERS, timeout=15)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                div = soup.find("div", attrs={"data-page": True})
+                if div and div.get("data-page"):
+                    page_data = json.loads(div["data-page"])
+                    job_list = page_data.get("props", {}).get("jobs", [])
+                    for item in job_list:
+                        if len(jobs) >= limit:
+                            break
+                        if not isinstance(item, dict):
+                            continue
+                        title = item.get("title") or ""
+                        company_name = item.get("companyName") or "YC Startup"
+                        batch = item.get("companyBatch", "")
+                        if batch:
+                            company_name = f"{company_name} (YC {batch})"
+                        one_liner = item.get("companyOneLiner") or ""
+                        desc = f"{title} at {company_name}. {one_liner}".strip()
+
+                        job_id = item.get("id")
+                        link = item.get("applyUrl") or (f"https://www.workatastartup.com/jobs/{job_id}" if job_id else "")
+                        if not link or link in seen_links:
+                            continue
+
+                        loc = str(item.get("location") or "India")
+                        last_active = item.get("companyLastActiveAt")
+                        posted_dt = parse_job_date(last_active)
+                        if posted_dt and posted_dt < cutoff:
+                            continue
+
+                        job_obj = {
+                            "title": title,
+                            "company": company_name,
+                            "description": desc[:1500],
+                            "link": link,
+                            "apply_url": link,
+                            "location": loc,
+                            "source": "yc",
+                            "posted_at": posted_dt,
+                        }
+
+                        if is_located_in_india(job_obj):
+                            seen_links.add(link)
+                            jobs.append(job_obj)
+                            if len(jobs) >= limit:
+                                break
+        except Exception as e:
+            logger.warning(f"Error parsing WAAS Inertia data: {e}")
 
     return jobs[:limit]
 
@@ -559,6 +668,21 @@ def fetch_internshala_jobs(search_query: str = "AI Engineer", limit: int = 10,
                         loc_el = card.find(id=re.compile(r"location")) or card.find(class_=re.compile(r"location"))
                         loc = loc_el.get_text(strip=True) if loc_el else "India"
 
+                        status_el = card.find(class_=re.compile(r"status|posted|published"))
+                        date_text = status_el.get_text(strip=True) if status_el else None
+                        if not date_text:
+                            date_match = re.search(
+                                r"(\d+\s+(?:days?|hours?|weeks?|months?)\s+ago|just now|few hours ago|today)",
+                                card.get_text(), re.IGNORECASE
+                            )
+                            if date_match:
+                                date_text = date_match.group(1)
+                        posted_dt = parse_job_date(date_text)
+
+                        cutoff = _NOW() - timedelta(hours=posted_within_hours)
+                        if posted_dt and posted_dt < cutoff:
+                            continue
+
                         job_obj = {
                             "title": title,
                             "company": comp,
@@ -567,7 +691,7 @@ def fetch_internshala_jobs(search_query: str = "AI Engineer", limit: int = 10,
                             "apply_url": href,
                             "location": loc,
                             "source": "internshala",
-                            "posted_at": _NOW(),
+                            "posted_at": posted_dt,
                         }
                         if is_located_in_india(job_obj):
                             jobs.append(job_obj)
@@ -731,6 +855,12 @@ def fetch_simplifyjobs_github(search_query: str = "AI Engineer", limit: int = 10
                 if q_terms and not any(t in combined for t in q_terms) and not is_ai_relevant:
                     continue
 
+                date_str = tds[4].get_text(strip=True) if len(tds) > 4 else ""
+                posted_dt = parse_job_date(date_str)
+                cutoff = _NOW() - timedelta(hours=posted_within_hours)
+                if posted_dt and posted_dt < cutoff:
+                    continue
+
                 job_obj = {
                     "title": title if title else f"Position at {company}",
                     "company": company,
@@ -739,7 +869,7 @@ def fetch_simplifyjobs_github(search_query: str = "AI Engineer", limit: int = 10
                     "apply_url": href,
                     "location": location,
                     "source": "simplifyjobs",
-                    "posted_at": _NOW(),
+                    "posted_at": posted_dt,
                 }
                 if is_located_in_india(job_obj):
                     jobs.append(job_obj)
@@ -787,7 +917,10 @@ def fetch_pittcsc_github(search_query: str = "AI Engineer", limit: int = 10,
                 title = tds[1].get_text(strip=True) if len(tds) > 1 else "Software Engineer"
                 location = tds[2].get_text(strip=True) if len(tds) > 2 else ""
                 date_str = tds[4].get_text(strip=True) if len(tds) > 4 else ""
-                posted_dt = _parse_iso(date_str) if date_str else _NOW()
+                posted_dt = parse_job_date(date_str)
+                cutoff = _NOW() - timedelta(hours=posted_within_hours)
+                if posted_dt and posted_dt < cutoff:
+                    continue
 
                 href = ""
                 for a in tr.find_all("a", href=True):
@@ -829,15 +962,102 @@ def fetch_pittcsc_github(search_query: str = "AI Engineer", limit: int = 10,
 
 
 # ---------------------------------------------------------------------------
+# 7. Peerlist (Primary Platform — Indian Tech Founders & Builders)
+# ---------------------------------------------------------------------------
+def fetch_peerlist_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                        posted_within_hours: int = 168) -> List[Dict[str, Any]]:
+    """
+    Fetches live tech roles from Peerlist public API (peerlist.io/api/v1/jobs)
+    strictly filtered for India and AI/ML domain.
+    """
+    if requests is None:
+        return []
+
+    jobs: List[Dict[str, Any]] = []
+    seen_links = set()
+    cutoff = _NOW() - timedelta(hours=posted_within_hours)
+
+    try:
+        url = "https://peerlist.io/api/v1/jobs"
+        resp = requests.get(url, headers=JSON_HEADERS, timeout=12)
+        if resp.status_code == 200:
+            data = resp.json().get("data", {})
+            raw_jobs = data.get("jobs", []) if isinstance(data, dict) else []
+
+            q_terms = [t.strip().lower() for t in search_query.split() if t.strip()]
+            ai_keywords = [
+                "ai", "ml", "machine learning", "deep learning", "nlp", "llm",
+                "data", "engineer", "software", "developer", "research", "fullstack", "backend"
+            ]
+
+            for item in raw_jobs:
+                if len(jobs) >= limit:
+                    break
+                if not isinstance(item, dict):
+                    continue
+
+                title = item.get("jobTitle") or ""
+                company_dict = item.get("company", {})
+                company = company_dict.get("name") if isinstance(company_dict, dict) else "Tech Startup"
+                desc = _clean_html(item.get("jobDescription") or f"{title} at {company}")
+
+                # Check relevance
+                combined = f"{title} {desc[:300]}".lower()
+                if q_terms and not any(t in combined for t in q_terms):
+                    if not any(k in combined for k in ai_keywords):
+                        continue
+
+                # Location extraction
+                loc_list = item.get("location", [])
+                loc_str = "India"
+                if isinstance(loc_list, list) and loc_list:
+                    cities = [l.get("city", "") for l in loc_list if isinstance(l, dict) and l.get("city")]
+                    countries = [l.get("country", "") for l in loc_list if isinstance(l, dict) and l.get("country")]
+                    loc_parts = cities + countries
+                    loc_str = ", ".join(dict.fromkeys(loc_parts)) if loc_parts else "India"
+
+                apply_url = item.get("applyLink") or ""
+                job_id = item.get("jobId") or ""
+                link = apply_url or (f"https://peerlist.io/jobs/{job_id}" if job_id else "")
+                if not link or link in seen_links:
+                    continue
+
+                published_raw = item.get("publishedAt")
+                posted_dt = parse_job_date(published_raw)
+                if posted_dt and posted_dt < cutoff:
+                    continue
+
+                job_obj = {
+                    "title": title,
+                    "company": company,
+                    "description": desc[:1500],
+                    "link": link,
+                    "apply_url": apply_url or link,
+                    "location": loc_str,
+                    "source": "peerlist",
+                    "posted_at": posted_dt,
+                }
+
+                if is_located_in_india(job_obj):
+                    seen_links.add(link)
+                    jobs.append(job_obj)
+    except Exception as e:
+        logger.warning(f"Error fetching Peerlist jobs: {e}")
+
+    return jobs[:limit]
+
+
+# ---------------------------------------------------------------------------
 # Platform Registry & Quota Distribution (PRIMARY PORTALS ONLY)
 #   LinkedIn is strictly excluded here and reserved for the FALLBACK NODE.
 #   Total Primary Target = 25 qualified openings.
 # ---------------------------------------------------------------------------
 
 PLATFORM_QUOTAS = {
-    "internshala":   10,
-    "wellfound":     5,
-    "yc":            4,
+    "internshala":   8,
+    "peerlist":      4,
+    "wellfound":     4,
+    "yc":            3,
     "greenhouse":    3,
     "simplifyjobs":  2,
     "pittcsc":       1,
@@ -857,13 +1077,19 @@ def get_scraper_platforms() -> List[Dict[str, Any]]:
             "fn": lambda q, lim, hrs, off: fetch_internshala_jobs(q, limit=lim, posted_within_hours=hrs)
         },
         {
+            "name": "Peerlist (India Startups)",
+            "source": "peerlist",
+            "quota": PLATFORM_QUOTAS["peerlist"],
+            "fn": lambda q, lim, hrs, off: fetch_peerlist_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
             "name": "Wellfound (AngelList)",
             "source": "wellfound",
             "quota": PLATFORM_QUOTAS["wellfound"],
             "fn": lambda q, lim, hrs, off: fetch_wellfound_jobs(q, limit=lim, posted_within_hours=hrs)
         },
         {
-            "name": "Y Combinator (Workatastartup)",
+            "name": "Y Combinator (Workatastartup & HN)",
             "source": "yc",
             "quota": PLATFORM_QUOTAS["yc"],
             "fn": lambda q, lim, hrs, off: fetch_yc_jobs(q, limit=lim, posted_within_hours=hrs)

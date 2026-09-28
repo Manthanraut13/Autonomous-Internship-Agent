@@ -43,6 +43,7 @@ token.json
 
 # CSV Reports
 *.csv
+!list.csv
 
 # Temporary test & runner directories
 strix_runs/
