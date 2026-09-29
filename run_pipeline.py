@@ -295,13 +295,23 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4, dry_r
                 j["work_mode"] = work_mode
 
                 # ── Step B: Semantic Pre-Filtering via Local Embeddings ────────
-                sem_score = embedder.compute_semantic_score(desc)
+                sem_score = embedder.compute_semantic_score(desc, j.get("title", ""))
                 j["semantic_score"] = sem_score
 
-                # Pre-filter threshold: skip Groq LLM if semantic score is too low (< 35)
-                if sem_score < 35.0:
+                # Check for explicit AI/ML/Developer keywords
+                combined_text = f"{j.get('title', '')} {desc}".lower()
+                is_explicit_tech = any(
+                    k in combined_text
+                    for k in [
+                        "ai", "artificial intelligence", "machine learning", "ml", "genai", "llm",
+                        "agent", "deep learning", "nlp", "computer vision", "python", "data science",
+                        "developer", "software engineer", "intern", "engineer"
+                    ]
+                )
+
+                if not is_explicit_tech and sem_score < 15.0:
                     semantic_filtered_count += 1
-                    print(f"      ⏩ Semantic pre-filter passed over ({sem_score}/100): {j['title']} @ {j['company']}")
+                    print(f"      ⏩ Semantic pre-filter passed over non-tech role ({sem_score}/100): {j['title']} @ {j['company']}")
                     continue
 
                 # ── Step C: Deep Evaluation with Groq LLM ──────────────────────
@@ -427,12 +437,22 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4, dry_r
                         j["role_type"] = role_type
                         j["work_mode"] = work_mode
 
-                        sem_score = embedder.compute_semantic_score(desc)
+                        sem_score = embedder.compute_semantic_score(desc, j.get("title", ""))
                         j["semantic_score"] = sem_score
 
-                        if sem_score < 35.0:
+                        combined_text = f"{j.get('title', '')} {desc}".lower()
+                        is_explicit_tech = any(
+                            k in combined_text
+                            for k in [
+                                "ai", "artificial intelligence", "machine learning", "ml", "genai", "llm",
+                                "agent", "deep learning", "nlp", "computer vision", "python", "data science",
+                                "developer", "software engineer", "intern", "engineer"
+                            ]
+                        )
+
+                        if not is_explicit_tech and sem_score < 15.0:
                             semantic_filtered_count += 1
-                            print(f"      ⏩ Semantic pre-filter passed over ({sem_score}/100): {j['title']} @ {j['company']}")
+                            print(f"      ⏩ Semantic pre-filter passed over non-tech role ({sem_score}/100): {j['title']} @ {j['company']}")
                             continue
 
                         print(f"      🔄 Scoring [LinkedIn Fallback]: [{role_type.upper()}|{work_mode.upper()}] {j['title']} @ {j['company']} (Semantic: {sem_score})…", end="", flush=True)
