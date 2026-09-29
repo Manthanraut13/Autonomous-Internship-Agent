@@ -44,54 +44,77 @@ logger = logging.getLogger(__name__)
 
 def _create_engine_with_fallback():
     """
-    Create a SQLAlchemy engine. Falls back to SQLite if PostgreSQL is
-    unavailable (e.g., during local development without PostgreSQL or cloud timeout).
+    Create a SQLAlchemy engine. Falls back gracefully through connection strategies:
+    1. Primary PostgreSQL URL (with 15s timeout)
+    2. If port 6543 (transaction pooler) fails on SSL/network, retry with port 5432 (session pooler)
+    3. If Supabase pooler fails completely, retry with direct host (db.<project_ref>.supabase.co:5432)
+    4. Finally, falls back to SQLite at data/agent.db if no remote connection succeeds.
     """
     db_url = settings.database_url
     pool_kwargs: dict = {}
 
     if db_url.startswith("postgresql"):
         import os
+        import re
         from sqlalchemy.pool import NullPool
 
-        # Strict connect_timeout ensures startup never hangs if DB is unreachable
         connect_args = {
-            "connect_timeout": 5,
+            "connect_timeout": 15,
         }
         if "sslmode" not in db_url:
             connect_args["sslmode"] = "require"
 
-        pool_kwargs = {
-            "connect_args": connect_args,
-            "pool_pre_ping": True,
-        }
+        # Determine candidates to attempt
+        urls_to_try = [db_url]
 
-        # Supabase transaction pooler (port 6543) requires NullPool to prevent prepared statement conflicts
-        if ":6543" in db_url or "pooler.supabase.com" in db_url:
-            pool_kwargs["poolclass"] = NullPool
-        else:
-            pool_kwargs.update({
-                "pool_size": 5,
-                "max_overflow": 10,
-                "pool_timeout": 5,
-                "pool_recycle": 300,
-            })
+        # If using Supabase port 6543, add port 5432 as candidate
+        if ":6543" in db_url:
+            urls_to_try.append(db_url.replace(":6543", ":5432"))
 
-        try:
-            logger.info("Attempting database connection to PostgreSQL...")
-            test_engine = create_engine(db_url, **pool_kwargs)
-            with test_engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-            logger.info("Database engine created successfully → PostgreSQL")
-            return test_engine
-        except Exception as e:
-            logger.warning(
-                f"PostgreSQL connection failed ({e}).\n"
-                f"  → Falling back to SQLite at data/agent.db so server starts immediately."
-            )
-            os.makedirs("data", exist_ok=True)
-            db_url = "sqlite:///data/agent.db"
-            pool_kwargs = {"connect_args": {"check_same_thread": False}}
+        if "pooler.supabase.com" in db_url:
+            m = re.search(r"postgres(?:ql)?://([^:]+):([^@]+)@([^:/]+)(?::\d+)?/(.+)", db_url)
+            if m:
+                user, password, host, db_name = m.groups()
+                clean_db_name = db_name.split("?")[0]
+                if "." in user:
+                    direct_user = "postgres"
+                    ref = user.split(".")[-1]
+                    direct_url = f"postgresql://{direct_user}:{password}@db.{ref}.supabase.co:5432/{clean_db_name}?sslmode=require"
+                    if direct_url not in urls_to_try:
+                        urls_to_try.append(direct_url)
+
+        for attempt_url in urls_to_try:
+            current_pool_kwargs = {
+                "connect_args": connect_args,
+                "pool_pre_ping": True,
+            }
+            if ":6543" in attempt_url or "pooler.supabase.com" in attempt_url:
+                current_pool_kwargs["poolclass"] = NullPool
+            else:
+                current_pool_kwargs.update({
+                    "pool_size": 5,
+                    "max_overflow": 10,
+                    "pool_timeout": 15,
+                    "pool_recycle": 300,
+                })
+
+            masked = attempt_url.split("@")[-1] if "@" in attempt_url else attempt_url
+            try:
+                logger.info(f"Connecting to database ({masked})...")
+                test_engine = create_engine(attempt_url, **current_pool_kwargs)
+                with test_engine.connect() as conn:
+                    conn.execute(text("SELECT 1"))
+                logger.info(f"Database engine created successfully → PostgreSQL ({masked})")
+                return test_engine
+            except Exception as e:
+                logger.warning(f"Connection attempt to {masked} failed: {e}")
+
+        logger.warning(
+            "All remote PostgreSQL connections failed. Falling back to SQLite at data/agent.db."
+        )
+        os.makedirs("data", exist_ok=True)
+        db_url = "sqlite:///data/agent.db"
+        pool_kwargs = {"connect_args": {"check_same_thread": False}}
     else:
         pool_kwargs = {"connect_args": {"check_same_thread": False}}
 

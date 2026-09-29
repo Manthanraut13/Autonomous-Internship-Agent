@@ -283,7 +283,16 @@ export default function App() {
         const payload: PipelineLog = JSON.parse(e.data);
         setPipelineLogs(prev => [...prev, payload]);
         if (payload.data && payload.data.job) {
-          setJobs(prev => [payload.data.job, ...prev]);
+          const newJob = payload.data.job;
+          setJobs(prev => {
+            if (prev.some(existing => (existing.link && existing.link === newJob.link) || existing.job_id === newJob.job_id)) {
+              return prev;
+            }
+            return [newJob, ...prev];
+          });
+        }
+        if (payload.step === 'complete') {
+          fetchData();
         }
       } catch (err) {
         console.error('Failed to parse SSE payload:', err);

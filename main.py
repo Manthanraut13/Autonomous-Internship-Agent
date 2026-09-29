@@ -662,11 +662,22 @@ async def stream_pipeline(
                         j["work_mode"] = work_mode
 
                         # Pre-filter using local embeddings
-                        sem_score = await asyncio.to_thread(embedder.compute_semantic_score, desc)
+                        sem_score = await asyncio.to_thread(embedder.compute_semantic_score, desc, j.get("title", ""))
                         j["semantic_score"] = sem_score
 
-                        if sem_score < 35.0:
-                            yield evt("matching", f"⏩ [{role_type.upper()}|{work_mode.upper()}] Pre-filtered low semantic match ({sem_score}/100): {j['title']} @ {j['company']}")
+                        # Check for explicit AI/ML/Developer keywords
+                        combined_text = f"{j.get('title', '')} {desc}".lower()
+                        is_explicit_tech = any(
+                            k in combined_text
+                            for k in [
+                                "ai", "artificial intelligence", "machine learning", "ml", "genai", "llm",
+                                "agent", "deep learning", "nlp", "computer vision", "python", "data science",
+                                "developer", "software engineer", "intern", "engineer"
+                            ]
+                        )
+
+                        if not is_explicit_tech and sem_score < 15.0:
+                            yield evt("matching", f"⏩ [{role_type.upper()}|{work_mode.upper()}] Pre-filtered non-tech role ({sem_score}/100): {j['title']} @ {j['company']}")
                             continue
 
                         yield evt("matching", f"[{len(scored_jobs)}/{target} Found] 🔄 Scoring [{role_type.upper()}|{work_mode.upper()}]: {j['title']} @ {j['company']} (Semantic: {sem_score})...")
@@ -684,9 +695,37 @@ async def stream_pipeline(
                         j["match_reasoning"] = reasoning
                         j["key_matches"] = key_matches
 
+                        # Create full job object for optimistic UI updates in frontend
+                        job_card = {
+                            "id": -(len(scored_jobs) + 1),
+                            "job_id": j.get("job_id", f"job-{uuid.uuid4().hex[:8]}"),
+                            "title": j["title"],
+                            "company": j["company"],
+                            "description": j.get("description", "")[:2000],
+                            "link": j.get("link", ""),
+                            "apply_url": j.get("apply_url", ""),
+                            "location": j.get("location", "India"),
+                            "source": j.get("source", "aggregated"),
+                            "posted_at": str(j.get("posted_at", "")),
+                            "match_score": score,
+                            "match_reasoning": reasoning,
+                            "semantic_score": sem_score,
+                            "role_type": role_type,
+                            "work_mode": work_mode,
+                            "status": "saved",
+                        }
+
                         emoji = "✅" if score >= threshold else "⬇️"
                         yield evt("matching", f"[{len(scored_jobs)+1}/{target}] {emoji} [{role_type.upper()}|{work_mode.upper()}] {j['title']} @ {j['company']} → {score}/100",
-                                  {"title": j["title"], "company": j["company"], "score": score, "role_type": role_type, "work_mode": work_mode, "semantic_score": sem_score})
+                                  {
+                                      "title": j["title"],
+                                      "company": j["company"],
+                                      "score": score,
+                                      "role_type": role_type,
+                                      "work_mode": work_mode,
+                                      "semantic_score": sem_score,
+                                      "job": job_card if score >= threshold else None,
+                                  })
 
                         if score >= threshold:
                             scored_jobs.append(j)
@@ -777,11 +816,21 @@ async def stream_pipeline(
                                 j["role_type"] = role_type
                                 j["work_mode"] = work_mode
 
-                                sem_score = await asyncio.to_thread(embedder.compute_semantic_score, desc)
+                                sem_score = await asyncio.to_thread(embedder.compute_semantic_score, desc, j.get("title", ""))
                                 j["semantic_score"] = sem_score
 
-                                if sem_score < 35.0:
-                                    yield evt("matching", f"⏩ [LinkedIn Fallback] Pre-filtered low semantic match ({sem_score}/100): {j['title']} @ {j['company']}")
+                                combined_text = f"{j.get('title', '')} {desc}".lower()
+                                is_explicit_tech = any(
+                                    k in combined_text
+                                    for k in [
+                                        "ai", "artificial intelligence", "machine learning", "ml", "genai", "llm",
+                                        "agent", "deep learning", "nlp", "computer vision", "python", "data science",
+                                        "developer", "software engineer", "intern", "engineer"
+                                    ]
+                                )
+
+                                if not is_explicit_tech and sem_score < 15.0:
+                                    yield evt("matching", f"⏩ [LinkedIn Fallback] Pre-filtered non-tech role ({sem_score}/100): {j['title']} @ {j['company']}")
                                     continue
 
                                 yield evt("matching", f"[{len(scored_jobs)}/{target} Found] 🔄 Scoring [LinkedIn Fallback | {role_type.upper()}|{work_mode.upper()}]: {j['title']} @ {j['company']} (Semantic: {sem_score})...")
@@ -799,9 +848,36 @@ async def stream_pipeline(
                                 j["match_reasoning"] = reasoning
                                 j["key_matches"] = key_matches
 
+                                job_card = {
+                                    "id": -(len(scored_jobs) + 1),
+                                    "job_id": j.get("job_id", f"job-{uuid.uuid4().hex[:8]}"),
+                                    "title": j["title"],
+                                    "company": j["company"],
+                                    "description": j.get("description", "")[:2000],
+                                    "link": j.get("link", ""),
+                                    "apply_url": j.get("apply_url", ""),
+                                    "location": j.get("location", "India"),
+                                    "source": j.get("source", "aggregated"),
+                                    "posted_at": str(j.get("posted_at", "")),
+                                    "match_score": score,
+                                    "match_reasoning": reasoning,
+                                    "semantic_score": sem_score,
+                                    "role_type": role_type,
+                                    "work_mode": work_mode,
+                                    "status": "saved",
+                                }
+
                                 emoji = "✅" if score >= threshold else "⬇️"
                                 yield evt("matching", f"[{len(scored_jobs)+1}/{target}] {emoji} [LinkedIn Fallback] {j['title']} @ {j['company']} → {score}/100",
-                                          {"title": j["title"], "company": j["company"], "score": score, "role_type": role_type, "work_mode": work_mode, "semantic_score": sem_score})
+                                          {
+                                              "title": j["title"],
+                                              "company": j["company"],
+                                              "score": score,
+                                              "role_type": role_type,
+                                              "work_mode": work_mode,
+                                              "semantic_score": sem_score,
+                                              "job": job_card if score >= threshold else None,
+                                          })
 
                                 if score >= threshold:
                                     scored_jobs.append(j)

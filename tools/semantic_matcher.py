@@ -234,16 +234,17 @@ class ResumeEmbedder:
             f"sections: {', '.join(sorted(unique_sections))}"
         )
 
-    def compute_semantic_score(self, job_description: str) -> float:
+    def compute_semantic_score(self, job_description: str, title: str = "") -> float:
         """
-        Computes weighted cosine similarity between job description and resume sub-chunks.
+        Computes weighted cosine similarity between job description (+ optional title) and resume sub-chunks.
         Uses MAX pooling per section (best sub-chunk match wins).
         Returns normalized score on a 0-100 scale.
         """
-        if not job_description or len(job_description.strip()) < 20:
+        combined_text = f"{title} {title} {job_description}".strip() if title else (job_description or "").strip()
+        if not combined_text or len(combined_text) < 15:
             return 0.0
 
-        jd_tokens = _tokenize_and_ngram(job_description)
+        jd_tokens = _tokenize_and_ngram(combined_text)
         jd_vec = _build_term_vector(jd_tokens)
 
         # Collect per-sub-chunk similarities, grouped by section
@@ -270,9 +271,10 @@ class ResumeEmbedder:
             weighted_score /= total_weight
 
         # Calibrated mapping:
-        # Cosine similarity for technical overlap ranges from ~0.03 (irrelevant) to ~0.30+ (strong fit)
-        # We scale 0.03 -> 0.0, 0.28 -> 100.0
-        normalized = (weighted_score - 0.03) / 0.25 * 100.0
+        # Irrelevant text (nurse, accountant, sales) has cosine <= 0.02 -> 0.0
+        # Moderate technical overlap has cosine ~0.05-0.10 -> 25-50
+        # Strong technical fit has cosine >= 0.15 -> 75-100
+        normalized = (weighted_score - 0.02) / 0.18 * 100.0
         return round(max(0.0, min(100.0, normalized)), 1)
 
 
