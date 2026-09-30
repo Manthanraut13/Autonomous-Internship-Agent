@@ -160,12 +160,19 @@ app = FastAPI(
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialise database tables and start background cron scheduler on application startup."""
+    """Initialise database tables and optionally start background cron scheduler on application startup."""
     try:
         init_db()
         logger.info("✅ Database tables initialized and verified.")
     except Exception as e:
         logger.error(f"⚠️ Database startup check warning: {e}")
+
+    # PRODUCTION SAFETY: When DISABLE_SCHEDULER=true (set on Render), skip APScheduler.
+    # GitHub Actions handles the 9AM/9PM cron externally — running the scheduler inside
+    # the web process caused memory spikes and duplicate pipeline executions.
+    if os.environ.get("DISABLE_SCHEDULER", "").lower() in ("true", "1", "yes"):
+        logger.info("📅 APScheduler DISABLED (DISABLE_SCHEDULER=true). Pipeline scheduling is handled by GitHub Actions.")
+        return
 
     try:
         scheduler.add_job(
@@ -210,6 +217,24 @@ dist_dir = os.path.join(os.path.dirname(__file__), "frontend", "dist")
 assets_dir = os.path.join(dist_dir, "assets")
 if os.path.exists(assets_dir):
     app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+
+# --------------------------------------------------------------------------- #
+# Health Check (public — used by Render for health monitoring)                 #
+# --------------------------------------------------------------------------- #
+
+@app.get("/health")
+async def health_check():
+    """Public health check endpoint for Render / uptime monitors. No auth required."""
+    from db.database import check_db_connection
+    db_ok = check_db_connection()
+    scheduler_status = "disabled" if os.environ.get("DISABLE_SCHEDULER", "").lower() in ("true", "1", "yes") else ("running" if scheduler.running else "stopped")
+    return {
+        "status": "healthy" if db_ok else "degraded",
+        "database": "connected" if db_ok else "unreachable",
+        "scheduler": scheduler_status,
+        "version": app.version,
+    }
 
 
 @app.get("/")

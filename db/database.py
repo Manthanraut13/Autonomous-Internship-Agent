@@ -109,12 +109,15 @@ def _create_engine_with_fallback():
             except Exception as e:
                 logger.warning(f"Connection attempt to {masked} failed: {e}")
 
-        logger.warning(
-            "All remote PostgreSQL connections failed. Falling back to SQLite at data/agent.db."
+        # PRODUCTION SAFETY: Never silently fall back to SQLite when PostgreSQL is configured.
+        # Silent fallback caused data loss in production — pipeline wrote to local SQLite
+        # while the dashboard read from PostgreSQL, making all scraped jobs invisible.
+        raise RuntimeError(
+            "FATAL: All PostgreSQL connection attempts failed. "
+            "Refusing to fall back to SQLite to prevent silent data loss. "
+            "Check DATABASE_URL, network connectivity, and Supabase status. "
+            f"Attempted hosts: {[u.split('@')[-1] if '@' in u else u for u in urls_to_try]}"
         )
-        os.makedirs("data", exist_ok=True)
-        db_url = "sqlite:///data/agent.db"
-        pool_kwargs = {"connect_args": {"check_same_thread": False}}
     else:
         pool_kwargs = {"connect_args": {"check_same_thread": False}}
 
