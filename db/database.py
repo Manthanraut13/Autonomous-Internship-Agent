@@ -64,15 +64,15 @@ def _create_engine_with_fallback():
         if "sslmode" not in db_url:
             connect_args["sslmode"] = "require"
 
-        # Determine candidates to attempt
-        urls_to_try = [db_url]
+        # Determine base candidate endpoints
+        base_urls = [db_url]
 
         # If using Supabase port 6543, add port 5432 as candidate
         if ":6543" in db_url:
-            urls_to_try.append(db_url.replace(":6543", ":5432"))
+            base_urls.append(db_url.replace(":6543", ":5432"))
 
         if "pooler.supabase.com" in db_url:
-            m = re.search(r"postgres(?:ql)?://([^:]+):([^@]+)@([^:/]+)(?::\d+)?/(.+)", db_url)
+            m = re.search(r"postgres(?:ql)?(?:\+\w+)?://([^:]+):([^@]+)@([^:/]+)(?::\d+)?/(.+)", db_url)
             if m:
                 user, password, host, db_name = m.groups()
                 clean_db_name = db_name.split("?")[0]
@@ -80,8 +80,27 @@ def _create_engine_with_fallback():
                     direct_user = "postgres"
                     ref = user.split(".")[-1]
                     direct_url = f"postgresql://{direct_user}:{password}@db.{ref}.supabase.co:5432/{clean_db_name}?sslmode=require"
-                    if direct_url not in urls_to_try:
-                        urls_to_try.append(direct_url)
+                    if direct_url not in base_urls:
+                        base_urls.append(direct_url)
+
+        # Build candidate URLs with driver variants (psycopg v3, psycopg2 v2, generic postgresql)
+        urls_to_try = []
+        for u in base_urls:
+            prefix_match = re.match(r"^postgresql(?:\+\w+)?://", u)
+            if prefix_match:
+                stem = u[len(prefix_match.group(0)):]
+                # Try explicit psycopg (v3) first, then psycopg2 (v2), then generic postgresql://
+                variants = [
+                    f"postgresql+psycopg://{stem}",
+                    f"postgresql+psycopg2://{stem}",
+                    f"postgresql://{stem}",
+                ]
+                for v in variants:
+                    if v not in urls_to_try:
+                        urls_to_try.append(v)
+            else:
+                if u not in urls_to_try:
+                    urls_to_try.append(u)
 
         for attempt_url in urls_to_try:
             current_pool_kwargs = {
