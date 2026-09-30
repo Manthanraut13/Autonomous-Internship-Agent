@@ -166,6 +166,7 @@ class Settings(BaseSettings):
 
         accepted_prefixes = (
             "postgresql://",
+            "postgresql+psycopg://",
             "postgresql+psycopg2://",
             "sqlite://",
         )
