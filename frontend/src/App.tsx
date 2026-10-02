@@ -249,9 +249,9 @@ export default function App() {
         // Optimistic state update
         setJobs(prev => prev.map(j => {
           if (j.id === jobId) {
-            if (action === 'mark_applied') return { ...j, status: 'applied' };
-            if (action === 'reject') return { ...j, status: 'rejected' };
-            if (action === 'mark_saved') return { ...j, status: 'saved' };
+            if (action === 'mark_applied') return { ...j, status: 'applied', updated_at: new Date().toISOString() };
+            if (action === 'reject') return { ...j, status: 'rejected', updated_at: new Date().toISOString() };
+            if (action === 'mark_saved') return { ...j, status: 'saved', updated_at: new Date().toISOString() };
           }
           return j;
         }).filter(j => action === 'delete' ? j.id !== jobId : true));
@@ -353,6 +353,13 @@ export default function App() {
 
   const displayedJobs = jobs.filter(j => {
     if (minScoreFilter > 0 && (j.match_score || 0) < minScoreFilter) return false;
+    // Client-side safety: if an opening was rejected > 24 hours ago, filter it out immediately
+    if (j.status === 'rejected' && j.updated_at) {
+      const updatedMs = new Date(j.updated_at).getTime();
+      if (!isNaN(updatedMs) && Date.now() - updatedMs > 24 * 60 * 60 * 1000) {
+        return false;
+      }
+    }
     return true;
   });
 
@@ -730,6 +737,16 @@ export default function App() {
 
                 {/* ── Column 2: Job Cards Grid (8 cols on lg) ─────────────── */}
                 <div className="lg:col-span-8">
+                  {statusFilter === 'rejected' && (
+                    <div className="mb-4 flex items-center justify-between gap-3 px-4 py-3 bg-[#fff8e6] border border-[#f5d990] rounded-xl text-[#875a00] text-xs shadow-sm">
+                      <div className="flex items-center gap-2.5">
+                        <span className="material-symbols-outlined text-[20px] text-[#b87d00]">auto_delete</span>
+                        <span>
+                          <strong>24-Hour Auto-Purge:</strong> Openings in this rejected section are automatically and permanently deleted from both dashboard and database after 24 hours to keep storage free for upcoming openings.
+                        </span>
+                      </div>
+                    </div>
+                  )}
                   {loading && jobs.length === 0 ? (
                     <div className="bg-[#ffffff] rounded-xl p-12 text-center border border-[#d4dde8]">
                       <span className="material-symbols-outlined animate-spin text-[#136299] text-[36px] mb-3">sync</span>
@@ -841,13 +858,23 @@ export default function App() {
                                 <span className="material-symbols-outlined text-[18px]">done</span>
                               </button>
 
-                              <button
-                                onClick={() => handleJobAction(job.id, 'reject')}
-                                className="p-2 bg-[#f8f9ff] text-[#717880] hover:text-[#ba1a1a] hover:bg-[#ffdad6] rounded-lg border border-[#d4dde8] transition-colors cursor-pointer"
-                                title="Reject"
-                              >
-                                <span className="material-symbols-outlined text-[18px]">close</span>
-                              </button>
+                              {job.status === 'rejected' ? (
+                                <button
+                                  onClick={() => handleJobAction(job.id, 'mark_saved')}
+                                  className="p-2 bg-[#ffdad6] text-[#ba1a1a] hover:bg-[#ba1a1a] hover:text-white rounded-lg border border-[#ffb4ab] transition-colors cursor-pointer"
+                                  title="Restore to Inbox (Cancel Reject)"
+                                >
+                                  <span className="material-symbols-outlined text-[18px]">undo</span>
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => handleJobAction(job.id, 'reject')}
+                                  className="p-2 bg-[#f8f9ff] text-[#717880] hover:text-[#ba1a1a] hover:bg-[#ffdad6] rounded-lg border border-[#d4dde8] transition-colors cursor-pointer"
+                                  title="Reject (Auto-deletes after 24h)"
+                                >
+                                  <span className="material-symbols-outlined text-[18px]">close</span>
+                                </button>
+                              )}
 
                               <button
                                 onClick={() => setSelectedJob(job)}
