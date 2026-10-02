@@ -37,7 +37,7 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from config.settings import settings
-from db.database import get_db_context, init_db
+from db.database import get_db_context, init_db, cleanup_expired_rejected_jobs
 from db.models import Job, PipelineRun
 from tools.job_api import (
     get_scraper_platforms,
@@ -182,6 +182,14 @@ def run(target_matches: int = 25, threshold: int = 70, max_waves: int = 4, dry_r
             search_queries.append(q)
 
     print(f"   Queries ({len(search_queries)}): {', '.join(search_queries[:6])}...")
+
+    # ── Database Storage Optimization: Purge Expired Rejections (24h) ───────
+    try:
+        purged_count = cleanup_expired_rejected_jobs(max_age_hours=24)
+        if purged_count:
+            print(f"   🧹 Storage cleanup: permanently purged {purged_count} rejected opening(s) older than 24h")
+    except Exception as e:
+        logger.warning(f"Storage cleanup notice: {e}")
 
     # Load existing database signatures to prevent cross-run duplicates
     db_links, db_apply_urls, db_title_company = get_existing_db_signatures()

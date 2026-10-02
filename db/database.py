@@ -28,7 +28,8 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
-from typing import Generator
+from datetime import datetime, timedelta
+from typing import Generator, Optional
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -325,3 +326,49 @@ def check_db_connection() -> bool:
     except Exception as exc:
         logger.error(f"Database health check failed: {exc}", exc_info=True)
         return False
+
+
+# --------------------------------------------------------------------------- #
+# Retention & Cleanup Helper (24-Hour Permanent Deletion for Rejected Jobs)   #
+# --------------------------------------------------------------------------- #
+
+def cleanup_expired_rejected_jobs(db: Optional[Session] = None, max_age_hours: int = 24) -> int:
+    """
+    Permanently delete jobs with status 'rejected' or 'not_applied'
+    whose updated_at timestamp is older than max_age_hours (default: 24 hours).
+
+    This frees up database storage for upcoming job openings and keeps the
+    dashboard rejection section clean and relevant.
+
+    Args:
+        db: Optional SQLAlchemy Session. If None, one is created via get_db_context().
+        max_age_hours: Age threshold in hours (default 24 hours).
+
+    Returns:
+        int: Number of records permanently deleted.
+    """
+    from db.models import Job
+
+    cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+
+    def _execute_cleanup(session: Session) -> int:
+        deleted = (
+            session.query(Job)
+            .filter(
+                Job.status.in_(["rejected", "not_applied"]),
+                Job.updated_at < cutoff,
+            )
+            .delete(synchronize_session=False)
+        )
+        if deleted > 0:
+            logger.info(
+                f"🧹 Permanently deleted {deleted} rejected job(s) older than {max_age_hours}h (cutoff: {cutoff.isoformat()})."
+            )
+        return deleted
+
+    if db is not None:
+        return _execute_cleanup(db)
+    else:
+        with get_db_context() as session:
+            return _execute_cleanup(session)
+

@@ -320,6 +320,21 @@ To prevent duplicate job evaluations and redundant alerts across runs, the pipel
 
 ---
 
+### 6.4 Automated 24-Hour Storage Retention (Rejected Openings Purge)
+
+To prevent database bloat on managed PostgreSQL (e.g. Supabase) and ensure maximum capacity for new incoming openings:
+- When an opening is rejected from the dashboard, its status is set to `rejected` and its `updated_at` timestamp is set to the current UTC time.
+- Any opening with status `rejected` or `not_applied` that has been rejected for more than 24 hours is automatically and permanently deleted from both the database and the dashboard.
+- This automated purge executes across multiple lifecycles:
+  1. **Dashboard Access**: Triggered on `/api/dashboard/stats` and `/api/dashboard/jobs` so expired rejections never appear in UI or counts.
+  2. **Pipeline Execution**: Triggered at the beginning of `run_pipeline.py` and the dashboard streaming pipeline to clear storage before scraping new listings.
+  3. **Application Boot**: Triggered on FastAPI `startup_event`.
+  4. **Job Action**: Triggered whenever a job is rejected.
+  5. **Admin API**: Available via `POST /api/dashboard/cleanup-rejected` for manual execution.
+- If an opening was rejected by mistake, the user can restore it back to Inbox (`mark_saved`) within the 24-hour window before permanent deletion.
+
+---
+
 ## 7. Job Ingestion & Scraper Architecture
 
 ### 7.1 Priority Order & Top 3 Platform Hierarchy

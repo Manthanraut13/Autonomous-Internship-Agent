@@ -52,7 +52,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from config.settings import settings
-from db.database import get_db, get_db_context, init_db
+from db.database import get_db, get_db_context, init_db, cleanup_expired_rejected_jobs
 from db.models import Job, PipelineRun
 
 # --------------------------------------------------------------------------- #
@@ -164,6 +164,10 @@ async def startup_event():
     try:
         init_db()
         logger.info("✅ Database tables initialized and verified.")
+        # Proactively purge expired rejected openings (older than 24 hours) to free database space
+        purged = cleanup_expired_rejected_jobs(max_age_hours=24)
+        if purged:
+            logger.info(f"🧹 Startup cleanup: permanently purged {purged} rejected opening(s) older than 24h.")
     except Exception as e:
         logger.error(f"⚠️ Database startup check warning: {e}")
 
@@ -369,6 +373,9 @@ async def get_dashboard_stats(
     db: Session = Depends(get_db),
     admin: str = Depends(require_admin)
 ) -> Dict[str, Any]:
+    # Proactively purge rejected openings older than 24 hours before computing stats
+    cleanup_expired_rejected_jobs(db, max_age_hours=24)
+
     all_jobs = db.query(Job).all()
     total_jobs = len(all_jobs)
     saved_count = sum(1 for j in all_jobs if j.status == "saved")
@@ -414,6 +421,9 @@ async def get_dashboard_jobs(
     db: Session = Depends(get_db),
     admin: str = Depends(require_admin)
 ) -> Dict[str, Any]:
+    # Proactively purge rejected openings older than 24 hours before querying
+    cleanup_expired_rejected_jobs(db, max_age_hours=24)
+
     query = db.query(Job)
     if status and status != "all":
         if status in ["rejected", "not_applied"]:
@@ -477,6 +487,8 @@ async def execute_job_action(
         job.status = "rejected"
         job.updated_at = datetime.utcnow()
         db.commit()
+        # Clean up any expired rejected jobs (older than 24 hours) from DB
+        cleanup_expired_rejected_jobs(db, max_age_hours=24)
         return {"status": "success", "message": f"Job #{job_id} marked as not applied."}
 
     elif action in ["mark_saved", "restore"]:
@@ -486,6 +498,24 @@ async def execute_job_action(
         return {"status": "success", "message": f"Job #{job_id} moved back to Inbox."}
 
     raise HTTPException(status_code=400, detail=f"Invalid action '{action}'.")
+
+
+@app.post("/api/dashboard/cleanup-rejected")
+async def trigger_cleanup_rejected(
+    max_age_hours: int = 24,
+    db: Session = Depends(get_db),
+    admin: str = Depends(require_admin)
+) -> Dict[str, Any]:
+    """
+    Permanently delete rejected openings older than max_age_hours (default: 24h)
+    from both the dashboard view and database to free up storage for incoming openings.
+    """
+    deleted_count = cleanup_expired_rejected_jobs(db, max_age_hours=max_age_hours)
+    return {
+        "status": "success",
+        "deleted_count": deleted_count,
+        "message": f"Permanently deleted {deleted_count} rejected opening(s) older than {max_age_hours} hours."
+    }
 
 
 @app.get("/api/dashboard/settings")
@@ -598,6 +628,10 @@ async def stream_pipeline(
 
             # ── Step 3: Load existing DB signatures to prevent duplicates ─
             with get_db_context() as db:
+                # Free database storage by permanently purging expired rejected openings (>24h)
+                cleaned_count = cleanup_expired_rejected_jobs(db, max_age_hours=24)
+                if cleaned_count:
+                    yield evt("cleanup", f"🧹 Storage cleanup: permanently purged {cleaned_count} rejected opening(s) older than 24h.")
                 db_links = set(r[0].strip().lower() for r in db.query(Job.link).all() if r[0])
                 db_apply_urls = set(r[0].strip().lower() for r in db.query(Job.apply_url).all() if r[0])
                 db_signatures = set((r[0].strip().lower(), r[1].strip().lower()) for r in db.query(Job.title, Job.company).all() if r[0] and r[1])
