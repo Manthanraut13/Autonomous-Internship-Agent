@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Generator, Optional
 
 from sqlalchemy import create_engine, event, text
@@ -349,7 +349,7 @@ def cleanup_expired_rejected_jobs(db: Optional[Session] = None, max_age_hours: i
     """
     from db.models import Job
 
-    cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=max_age_hours)
 
     def _execute_cleanup(session: Session) -> int:
         deleted = (

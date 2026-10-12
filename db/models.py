@@ -15,7 +15,12 @@ Usage:
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now for the naive DateTime columns (replaces deprecated datetime.utcnow)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 from sqlalchemy import (
     Boolean,
@@ -84,11 +89,11 @@ class Job(Base):
 
     # Timestamps
     posted_at = Column(DateTime, nullable=True)
-    scraped_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    scraped_at = Column(DateTime, default=_utcnow, nullable=False)
     updated_at = Column(
         DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=_utcnow,
+        onupdate=_utcnow,
         nullable=False,
     )
 
@@ -128,7 +133,7 @@ class PipelineRun(Base):
     __tablename__ = "pipeline_runs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    started_at = Column(DateTime, default=_utcnow, nullable=False)
     completed_at = Column(DateTime, nullable=True)
     status = Column(String(50), default="running", nullable=False)  # 'success', 'failed', 'running'
     jobs_found = Column(Integer, default=0)

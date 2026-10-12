@@ -52,7 +52,7 @@ def make_job(company, link, desc, posted_at=None, title="AI Engineer Intern", lo
         "description": desc,
         "location": location,
         "source": "fakeboard",
-        "posted_at": posted_at or datetime.utcnow(),
+        "posted_at": posted_at or datetime.now(timezone.utc).replace(tzinfo=None),
     }
 
 
@@ -124,7 +124,7 @@ def test_mixed_run_outcome(patched):
         make_job("Acme", "https://j/good", GOOD_DESC),
         make_job("Beta", "https://j/short", SYNTHETIC_DESC, title="AI Intern"),
         make_job("OldCo", "https://j/stale", GOOD_DESC, title="ML Intern",
-                 posted_at=datetime.utcnow() - timedelta(days=10)),
+                 posted_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=10)),
     ])
 
     last = events[-1]
@@ -222,11 +222,11 @@ def test_missing_resume_yields_error_event(monkeypatch):
 # ── Pure helpers ─────────────────────────────────────────────────────────────
 
 def test_date_gate_fresh_naive_passes():
-    assert passes_date_gate(datetime.utcnow(), 24)
+    assert passes_date_gate(datetime.now(timezone.utc).replace(tzinfo=None), 24)
 
 
 def test_date_gate_old_naive_fails():
-    assert not passes_date_gate(datetime.utcnow() - timedelta(hours=48), 24)
+    assert not passes_date_gate(datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=48), 24)
 
 
 def test_date_gate_old_aware_fails():
@@ -236,7 +236,7 @@ def test_date_gate_old_aware_fails():
 
 def test_date_gate_naive_treated_as_utc():
     # A naive timestamp 25h old must fail (naive == UTC), not pass as "local".
-    assert not passes_date_gate(datetime.utcnow() - timedelta(hours=25), 24)
+    assert not passes_date_gate(datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=25), 24)
 
 
 def test_date_gate_parseable_strings_are_checked():

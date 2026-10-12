@@ -106,7 +106,7 @@ The platform continuously monitors top startup job ecosystems, extracts candidat
 | **AI Inference** | Groq API (`openai/gpt-oss-120b`, `openai/gpt-oss-20b`), LangChain, LangSmith Tracing |
 | **Database & ORM** | PostgreSQL (Render Cloud), SQLite (Local Fallback), SQLAlchemy 2.0 |
 | **Frontend UI** | React 18, TypeScript, Vite 8, Vanilla CSS Design System, Lucide / Material Symbols |
-| **Document Processing** | PyMuPDF (`fitz`), pdfplumber, pypdf |
+| **Document Processing** | PyMuPDF (`fitz`), PyPDF2 |
 | **Scraping & Ingestion** | Requests, BeautifulSoup4, Public API Integrations (Internshala, Peerlist, Wellfound, YC, Greenhouse, SimplifyJobs, Pitt CSC, LinkedIn) |
 | **Notification Services** | Google Gmail API (OAuth 2.0 MIME), Twilio Messaging API (WhatsApp), SendGrid API |
 | **Scheduling & CI/CD** | GitHub Actions Cron, APScheduler (`AsyncIOScheduler`), Render Web Services |

@@ -25,6 +25,12 @@ services:
         sync: false
       - key: RECIPIENT_EMAIL
         sync: false
+      - key: SENDER_EMAIL
+        sync: false
+      - key: CANDIDATE_NAME
+        sync: false
+      - key: CANDIDATE_EMAIL
+        sync: false
       - key: TWILIO_ACCOUNT_SID
         sync: false
       - key: TWILIO_AUTH_TOKEN

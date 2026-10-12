@@ -163,7 +163,7 @@ def _log_run(run_start: datetime, jobs_found: int, jobs_matched: int,
         with get_db_context() as db:
             db.add(PipelineRun(
                 started_at=run_start,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc).replace(tzinfo=None),
                 status="success",
                 jobs_found=jobs_found,
                 jobs_matched=jobs_matched,
@@ -192,7 +192,7 @@ def process_jobs(target_matches: int = 25, threshold: int = 70, source: str = "c
     "data" carries the outcome (counts, csv_path, email_sent, ...).
     """
     abort = should_abort or (lambda: False)
-    run_start = datetime.utcnow()
+    run_start = datetime.now(timezone.utc).replace(tzinfo=None)
     email_sent = False
     whatsapp_sent = False
     csv_path = None

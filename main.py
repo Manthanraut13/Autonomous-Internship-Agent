@@ -37,7 +37,7 @@ import hmac
 import base64
 import hashlib
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, AsyncGenerator
 
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request, Header, Query
@@ -500,13 +500,13 @@ async def execute_job_action(
 
     elif action == "mark_applied":
         job.status = "applied"
-        job.updated_at = datetime.utcnow()
+        job.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
         db.commit()
         return {"status": "success", "message": f"Job #{job_id} marked as applied."}
 
     elif action in ["mark_not_applied", "reject"]:
         job.status = "rejected"
-        job.updated_at = datetime.utcnow()
+        job.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
         db.commit()
         # Clean up any expired rejected jobs (older than 24 hours) from DB
         cleanup_expired_rejected_jobs(db, max_age_hours=24)
@@ -514,7 +514,7 @@ async def execute_job_action(
 
     elif action in ["mark_saved", "restore"]:
         job.status = "saved"
-        job.updated_at = datetime.utcnow()
+        job.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
         db.commit()
         return {"status": "success", "message": f"Job #{job_id} moved back to Inbox."}
 
@@ -604,7 +604,7 @@ async def stream_pipeline(
         threading.Thread(target=worker, daemon=True, name="pipeline-worker").start()
 
         def evt(step: str, message: str, data: Any = None) -> dict:
-            payload = {"step": step, "message": message, "timestamp": datetime.utcnow().isoformat()}
+            payload = {"step": step, "message": message, "timestamp": datetime.now(timezone.utc).isoformat()}
             if data is not None:
                 payload["data"] = data
             return {"event": "pipeline", "data": json.dumps(payload)}

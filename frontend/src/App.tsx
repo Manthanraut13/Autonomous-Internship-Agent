@@ -283,6 +283,10 @@ export default function App() {
     eventSource.addEventListener('pipeline', (e: MessageEvent) => {
       try {
         const payload: PipelineLog = JSON.parse(e.data);
+        // Normalize server UTC timestamps to local time-only, matching the
+        // client-generated entries so the log shows one consistent timezone.
+        const serverTime = new Date(payload.timestamp);
+        payload.timestamp = isNaN(serverTime.getTime()) ? payload.timestamp : serverTime.toLocaleTimeString();
         setPipelineLogs(prev => [...prev, payload]);
         if (payload.data && payload.data.job) {
           const newJob = payload.data.job;
