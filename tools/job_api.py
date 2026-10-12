@@ -194,24 +194,54 @@ _INDIA_REGEX = re.compile(r"\b(?:india|bharat)\b", re.IGNORECASE)
 _INDIA_CODE_REGEX = re.compile(r"(?:,\s*|\/\s*|\b)in\b", re.IGNORECASE)
 
 
+def _india_place_from_text(text: str) -> str:
+    """
+    Returns the first Indian country / state / city mentioned in `text`,
+    or an empty string when none is found.
+
+    Used to derive a location from source text that has no structured
+    location field (e.g. Hacker News job titles). Only real, platform-
+    provided text is inspected — nothing is invented.
+    """
+    if not text:
+        return ""
+    m = _INDIA_REGEX.search(text)
+    if m:
+        return m.group(0)
+    for state in INDIAN_STATES:
+        if re.search(r"\b" + re.escape(state) + r"\b", text, re.IGNORECASE):
+            return state
+    for city in INDIAN_CITIES:
+        if re.search(r"\b" + re.escape(city) + r"\b", text, re.IGNORECASE):
+            return city
+    return ""
+
+
 def is_located_in_india(job: Dict[str, Any]) -> bool:
     """
-    Strict guardrail ensuring job is located ONLY in India.
-    Accepts:
-      - On-site in India (e.g. Bengaluru, Pune, Hyderabad, Delhi, etc.)
-      - Hybrid in India
-      - Remote but explicitly located in India (e.g. 'Remote, India', 'India (Remote)')
+    Strict guardrail ensuring job is located in India.
+
+    Evidence rules (no shortcuts — the product promise is "verified India"):
+      - ACCEPT: the job's location FIELD names an Indian place
+        (e.g. 'Bengaluru', 'Pune, India', 'Remote, India', 'India (Remote)').
+      - ACCEPT: location field is empty or generic ('', 'Remote', 'WFH',
+        'Anywhere') but the job TITLE explicitly names an Indian place
+        (e.g. 'AI Intern — Bangalore (Remote)'). Titles are real data
+        extracted from the listing on every platform.
+      - REJECT: anything else — including unknown locations. A missing
+        location is NOT evidence of India.
+      - Job DESCRIPTIONS are never used as evidence because several
+        scrapers build synthetic description text (see job_api docstrings).
+
     Rejects:
       - Any job located outside India (US, UK, Canada, Europe, Singapore, etc.)
-      - Ambiguous 'Remote', 'Worldwide', 'Global' without explicit India location.
+      - Ambiguous 'Remote', 'Worldwide', 'Global' without explicit India evidence.
     """
     if not job:
         return False
 
     loc = (job.get("location") or "").lower().strip()
     title = (job.get("title") or "").lower()
-    desc = (job.get("description") or "").lower()
-    source = (job.get("source") or "").lower()
 
     # 1. Immediate disqualification on explicit foreign country/city
     for fc in FOREIGN_COUNTRIES:
@@ -239,20 +269,12 @@ def is_located_in_india(job: Dict[str, Any]) -> bool:
     if _INDIA_CODE_REGEX.search(loc) and any(w in loc for w in ["remote", "wfh", "work from home", "hybrid", "onsite"]):
         return True
 
-    # 3. Platform inherent guarantee for verified Indian boards
-    if source == "internshala":
-        return True
-
-    # 4. Context check for generic remote/unspecified locations
+    # 3. Empty / generic location: only the TITLE can prove India.
+    #    (Removed the old `source == "internshala"` bypass — platform name
+    #     is not location evidence. Removed the description scan — several
+    #     scrapers build synthetic description text.)
     if loc in ["remote", "work from home", "wfh", "anywhere", "open", ""]:
-        combined_text = f"{title} {desc[:800]}"
-        if any(re.search(r"\b" + re.escape(phrase) + r"\b", combined_text) for phrase in [
-            "in india", "india only", "located in india", "based in india", "for indian", "pan india"
-        ]):
-            return True
-        if any(re.search(r"\b" + re.escape(city) + r"\b", combined_text) for city in INDIAN_CITIES):
-            return True
-        return False
+        return bool(_india_place_from_text(title))
 
     return False
 
@@ -308,7 +330,9 @@ def fetch_linkedin_jobs(search_query: str = "AI Engineer", location: str = "Indi
                     title = title_el.text.strip()
                     company = comp_el.text.strip() if comp_el else "Unknown Company"
                     job_link = link_el["href"].split("?")[0]
-                    job_loc = loc_el.text.strip() if loc_el else location
+                    # No fallback to the search location — a missing element
+                    # means unknown, and unknown is not India evidence.
+                    job_loc = loc_el.text.strip() if loc_el else ""
                     posted_at_str = time_el["datetime"] if time_el and time_el.get("datetime") else (time_el.text.strip() if time_el else "")
                     posted_dt = parse_job_date(posted_at_str)
 
@@ -390,7 +414,7 @@ def fetch_wellfound_jobs(search_query: str = "AI Engineer", limit: int = 10,
                     # Find parent company container
                     card = jl.find_parent("div", class_=re.compile(r"mb-|rounded|border|card"))
                     company = "Wellfound Startup"
-                    loc = "India"
+                    loc = ""  # unknown until the card actually shows one — never assume India
                     date_text = None
 
                     if card:
@@ -481,13 +505,16 @@ def fetch_yc_jobs(search_query: str = "AI Engineer", limit: int = 10,
                 if posted_dt and posted_dt < cutoff:
                     continue
 
+                # HN job posts carry no structured location. Derive one from
+                # the real title text only; empty means unknown → guardrail
+                # drops it unless the title names an Indian place.
                 job_obj = {
                     "title": title,
                     "company": company,
                     "description": f"{title}. YC-backed startup. Apply at: {url}",
                     "link": url,
                     "apply_url": url,
-                    "location": "India",
+                    "location": _india_place_from_text(title),
                     "source": "yc",
                     "posted_at": posted_dt,
                 }
@@ -529,7 +556,7 @@ def fetch_yc_jobs(search_query: str = "AI Engineer", limit: int = 10,
                         if not link or link in seen_links:
                             continue
 
-                        loc = str(item.get("location") or "India")
+                        loc = str(item.get("location") or "")
                         last_active = item.get("companyLastActiveAt")
                         posted_dt = parse_job_date(last_active)
                         if posted_dt and posted_dt < cutoff:
@@ -591,7 +618,7 @@ def fetch_internshala_jobs(search_query: str = "AI Engineer", limit: int = 10,
                     company = item.get("company", {}).get("display_name", "Company")
                     desc = item.get("description", f"{title} at {company}.")
                     link = item.get("redirect_url", "")
-                    loc = item.get("location", {}).get("display_name", "India")
+                    loc = (item.get("location") or {}).get("display_name") or ""
                     posted_raw = item.get("created", "")
                     posted_dt = _parse_iso(posted_raw) if posted_raw else _NOW()
                     if not link:
@@ -666,7 +693,7 @@ def fetch_internshala_jobs(search_query: str = "AI Engineer", limit: int = 10,
                         comp = re.sub(r"actively hiring", "", comp_raw, flags=re.I).strip()
 
                         loc_el = card.find(id=re.compile(r"location")) or card.find(class_=re.compile(r"location"))
-                        loc = loc_el.get_text(strip=True) if loc_el else "India"
+                        loc = loc_el.get_text(strip=True) if loc_el else ""
 
                         status_el = card.find(class_=re.compile(r"status|posted|published"))
                         date_text = status_el.get_text(strip=True) if status_el else None
@@ -784,7 +811,7 @@ def fetch_greenhouse_jobs(search_query: str = "AI Engineer", limit: int = 10,
                     "description": desc if desc else f"{title} position at {company_slug}.",
                     "link": link,
                     "apply_url": link,
-                    "location": location if location else "India",
+                    "location": location,  # store what the board reported; may be empty
                     "source": "greenhouse",
                     "posted_at": posted_dt,
                 })
@@ -1007,14 +1034,14 @@ def fetch_peerlist_jobs(search_query: str = "AI Engineer", limit: int = 10,
                     if not any(k in combined for k in ai_keywords):
                         continue
 
-                # Location extraction
+                # Location extraction — unknown stays empty, never assumed India
                 loc_list = item.get("location", [])
-                loc_str = "India"
+                loc_str = ""
                 if isinstance(loc_list, list) and loc_list:
                     cities = [l.get("city", "") for l in loc_list if isinstance(l, dict) and l.get("city")]
                     countries = [l.get("country", "") for l in loc_list if isinstance(l, dict) and l.get("country")]
                     loc_parts = cities + countries
-                    loc_str = ", ".join(dict.fromkeys(loc_parts)) if loc_parts else "India"
+                    loc_str = ", ".join(dict.fromkeys(loc_parts))
 
                 apply_url = item.get("applyLink") or ""
                 job_id = item.get("jobId") or ""
@@ -1115,58 +1142,3 @@ def get_scraper_platforms() -> List[Dict[str, Any]]:
     ]
 
 
-def fetch_jobs(search_query: str = "AI Engineer", limit: int = 25,
-               posted_within_hours: int = 24, start_offset: int = 0) -> List[Dict[str, Any]]:
-    """
-    Cascades across primary platforms first.
-    If the quota of `limit` (default 25) qualified listings is not fulfilled,
-    falls back to LinkedIn India to supply the remainder.
-    """
-    all_jobs: List[Dict[str, Any]] = []
-    seen_links: set = set()
-    platform_counts: Dict[str, int] = {}
-
-    def _add_unique(jobs_list, source_name: str, quota: int):
-        added = 0
-        for j in jobs_list:
-            if added >= quota or len(all_jobs) >= limit:
-                break
-            if not is_located_in_india(j):
-                continue
-            key = (j.get("apply_url") or j.get("link") or "").strip().lower()
-            if key and key not in seen_links:
-                seen_links.add(key)
-                all_jobs.append(j)
-                platform_counts[source_name] = platform_counts.get(source_name, 0) + 1
-                added += 1
-
-    # ── Node 1: Primary Portals Search ────────────────────────────────────
-    platforms = get_scraper_platforms()
-    for platform in platforms:
-        if len(all_jobs) >= limit:
-            break
-        plat_fn = platform["fn"]
-        quota = min(platform["quota"], limit - len(all_jobs))
-        try:
-            raw_jobs = plat_fn(search_query, quota * 2, posted_within_hours, start_offset)
-            _add_unique(raw_jobs, platform["source"], quota)
-        except Exception as e:
-            logger.warning(f"Error on {platform['name']}: {e}")
-
-    # ── Node 2: LinkedIn Fallback Node (if target quota not fulfilled) ────
-    if len(all_jobs) < limit:
-        needed = limit - len(all_jobs)
-        logger.info(f"Primary platforms yielded {len(all_jobs)}/{limit}. Triggering LinkedIn fallback for remaining {needed}...")
-        for offset in [0, 10, 20, 30]:
-            if len(all_jobs) >= limit:
-                break
-            try:
-                raw_linkedin = fetch_linkedin_jobs(
-                    search_query, location="India", limit=needed * 2,
-                    posted_within_hours=posted_within_hours, start_offset=offset
-                )
-                _add_unique(raw_linkedin, "linkedin", needed)
-            except Exception as e:
-                logger.warning(f"LinkedIn fallback error: {e}")
-
-    return all_jobs[:limit]

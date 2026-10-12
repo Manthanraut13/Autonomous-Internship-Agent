@@ -50,7 +50,7 @@ The **Autonomous Internship Agent** is a full-stack, enterprise-grade AI automat
 
 ### Key Capabilities
 - **Startup-First Scraping**: Automatically identifies and scrapes fresh job openings from high-growth tech startups.
-- **Strictly AI-Only Roles**: Dynamically extracts candidates' skills and locks queries exclusively to AI, GenAI, LLM, Agentic AI, and Machine Learning internships.
+- **AI/ML-Focused Queries**: Extracts candidate skills and builds search queries exclusively around AI, GenAI, LLM, Agentic AI, and Machine Learning internships; whole-word keyword and semantic pre-filters reduce non-AI noise before scoring.
 - **Internship-First Scoring Rubric**: Automatically filters out senior roles and evaluates candidates using a 4-dimension scoring rubric powered by high-speed Groq LLMs (`openai/gpt-oss-120b`).
 - **Immediate Early-Stop Pipeline**: Traverses sources in strict priority order and halts execution instantly the moment the target quota (default: 25 matches) is satisfied.
 - **Automated Dispatch**: Delivers structured CSV reports via Gmail OAuth 2.0 and WhatsApp summary alerts via Twilio.
@@ -77,16 +77,16 @@ The **Autonomous Internship Agent** is a full-stack, enterprise-grade AI automat
                                                          ▼
                                   ┌──────────────────────────────────────────────┐
                                   │     2. PRIORITY-ORDERED SCRAPER CASCADE      │
-                                  │  • Priority 1: LinkedIn Startup AI Interns   │
-                                  │  • Priority 2: Remotive Startup AI Openings  │
-                                  │  • Priority 3: Himalayas Remote Tech Openings │
+                                  │  • Priority 1-7: India portals (Internshala,  │
+                                  │    Peerlist, Wellfound, YC, Greenhouse,      │
+                                  │    SimplifyJobs, Pitt CSC)                   │
                                   └──────────────────────┬───────────────────────┘
                                                          │
                                                          ▼
                                   ┌──────────────────────────────────────────────┐
                                   │      3. DEDUPLICATION & PRE-FILTERING        │
-                                  │  • Strictly Remote / Online / Virtual filter │
-                                  │  • Rejects 5+ YOE / Senior / Staff titles    │
+                                  │  • Strict India location guardrail           │
+                                  │  • Whole-word tech keyword + semantic filter │
                                   │  • Cross-checks DB signature (Title + Co)    │
                                   │  • Cross-checks apply_url / link hashes      │
                                   └──────────────────────┬───────────────────────┘
@@ -337,16 +337,19 @@ To prevent database bloat on managed PostgreSQL (e.g. Supabase) and ensure maxim
 
 ## 7. Job Ingestion & Scraper Architecture
 
-### 7.1 Priority Order & Top 3 Platform Hierarchy
+### 7.1 Priority Order & Platform Hierarchy
 
-1. 🥇 **Priority 1 — LinkedIn Startups**:
-   - Directly targets high-growth startups offering AI internships on LinkedIn.
-   - Appends LinkedIn search parameters `f_JT=I` (Internship) and `f_E=1` (Entry-level).
-2. 🥈 **Priority 2 — Remotive Startups**:
-   - Queries Remotive's live remote startup database.
-   - Filters results for AI/ML/Data keywords.
-3. 🥉 **Priority 3 — Himalayas Startups**:
-   - Queries Himalayas' startup API for modern remote AI roles.
+1. 🥇 **Primary portals (priority order)**: Internshala, Peerlist, Wellfound,
+   Y Combinator (Workatastartup & HN), Greenhouse Boards, SimplifyJobs, Pitt CSC.
+   Each portal has a per-run quota; the pipeline halts once the target of
+   qualified matches is reached.
+2. 🥈 **Fallback — LinkedIn India**: activates only when the primary portals
+   leave the quota unfulfilled. Queries LinkedIn India with `f_JT=I`
+   (Internship) and `f_E=1` (Entry-level) parameters across widening time
+   windows (24h, then 72h).
+3. Every listing — primary or fallback — passes the same strict India location
+   guardrail, the 24-hour date gate, cross-run deduplication, and the
+   tech-keyword + semantic pre-filters before LLM scoring.
 
 ---
 
@@ -516,7 +519,7 @@ The design system is built around the narrative of **"Automated Intelligence wit
 
 4. **Filter Toolbar**:
    - Full-text search with live debounce across job titles and companies.
-   - Platform select dropdown (`All Platforms`, `LinkedIn Startups`, `Remotive Startups`, `Himalayas Startups`).
+   - Platform select dropdown (`All Platforms`, `LinkedIn (Fallback)`, `Internshala`, `Peerlist`, `Wellfound`, `Y Combinator`, `Greenhouse`, `SimplifyJobs`, `Pitt CSC`).
    - Interactive match score slider (`Score > [threshold]`).
    - Status pill toggles (`ALL`, `SAVED`, `APPLIED`, `REJECTED`).
    - Primary **"Run Pipeline"** CTA button with animated loading spinner.

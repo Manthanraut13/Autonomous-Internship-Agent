@@ -86,8 +86,8 @@ class Settings(BaseSettings):
     # Email Delivery (SendGrid or Gmail / SMTP / OAuth2)                  #
     # ------------------------------------------------------------------ #
     sendgrid_api_key: Optional[str] = None
-    sender_email: str = "noreply@internshipagent.com"
-    recipient_email: str = "manthanr141@gmail.com"
+    sender_email: str = ""               # set via env; no default (was placeholder)
+    recipient_email: str = ""            # set via env; no default (was personal email)
     gmail_user: Optional[str] = None
     gmail_app_password: Optional[str] = None
     gmail_credentials_file: str = "credentials.json"
@@ -121,13 +121,13 @@ class Settings(BaseSettings):
     adzuna_api_key: Optional[str] = None
 
     # ------------------------------------------------------------------ #
-    # Candidate Profile                                                    #
+    # Candidate Profile (env-only — never hardcode personal data here)    #
     # ------------------------------------------------------------------ #
-    candidate_name: str = "Manthan Raut"
-    candidate_email: str = "manthanr141@gmail.com"
-    candidate_phone: str = "+919529883808"
-    candidate_github: str = "https://github.com/Manthanraut13"
-    candidate_linkedin: str = "https://linkedin.com/in/manthan-raut"
+    candidate_name: str = ""
+    candidate_email: str = ""
+    candidate_phone: str = ""
+    candidate_github: str = ""
+    candidate_linkedin: str = ""
 
     # ------------------------------------------------------------------ #
     # Dashboard Authentication  (Optional for CLI/Cron, Validated for Web) #

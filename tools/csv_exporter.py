@@ -12,6 +12,18 @@ from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
+# Cells that would be interpreted as formulas by Excel/Sheets (OWASP CSV injection)
+_FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _sanitize_cell(value: Any) -> Any:
+    """Neutralize spreadsheet formula injection: a cell starting with =, +, -, @
+    gets a leading apostrophe so spreadsheets treat it as plain text."""
+    if isinstance(value, str) and value.startswith(_FORMULA_TRIGGERS):
+        return "'" + value
+    return value
+
+
 def export_jobs_to_csv(jobs: List[Dict[str, Any]], output_filename: str = "internships_latest.csv") -> str:
     """
     Exports jobs to a CSV file in the 'data' directory.
@@ -56,20 +68,20 @@ def export_jobs_to_csv(jobs: List[Dict[str, Any]], output_filename: str = "inter
                     key_matches = ", ".join(key_matches)
                     
                 writer.writerow([
-                    job.get("title", ""),
-                    job.get("company", ""),
-                    job.get("location", ""),
+                    _sanitize_cell(job.get("title", "")),
+                    _sanitize_cell(job.get("company", "")),
+                    _sanitize_cell(job.get("location", "")),
                     job.get("role_type", "internship"),
                     job.get("work_mode", "onsite"),
-                    job.get("source", ""),
+                    _sanitize_cell(job.get("source", "")),
                     job.get("match_score", ""),
                     job.get("semantic_score", ""),
-                    job.get("apply_url", ""),
-                    job.get("link", ""),
-                    job.get("posted_at", ""),
-                    key_matches,
-                    job.get("match_reasoning", ""),
-                    desc
+                    _sanitize_cell(job.get("apply_url", "")),
+                    _sanitize_cell(job.get("link", "")),
+                    _sanitize_cell(str(job.get("posted_at", ""))),
+                    _sanitize_cell(key_matches),
+                    _sanitize_cell(job.get("match_reasoning", "")),
+                    _sanitize_cell(desc)
                 ])
                 
         logger.info(f"Successfully exported {len(jobs)} jobs to {output_path}")

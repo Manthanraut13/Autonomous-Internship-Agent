@@ -337,3 +337,25 @@ def classify_work_mode(job: Dict[str, Any]) -> str:
     if any(k in combined for k in ["remote", "wfh", "work from home", "virtual", "online"]):
         return "remote"
     return "onsite"
+
+
+# Whole-word tech keywords that mark a listing as "explicitly tech", letting it
+# skip the cheap semantic-score pre-filter. Word boundaries are essential:
+# plain substring matching let "ai" pass "email", "available", "maintain" and
+# "intern" pass "international", so nearly every listing escaped the filter.
+_TECH_KEYWORD_PATTERN = re.compile(
+    r"\bai\b|\bartificial intelligence\b|\bmachine learning\b|\bml\b|\bgenai\b"
+    r"|\bllm\b|\bagents?\b|\bdeep learning\b|\bnlp\b|\bcomputer vision\b"
+    r"|\bpython\b|\bdata scien(?:ce|tist)s?\b|\bdeveloper(?:s)?\b"
+    r"|\bsoftware engineer(?:s|ing)?\b|\binterns?\b|\bengineer(?:s|ing)?\b",
+    re.IGNORECASE,
+)
+
+
+def is_explicit_tech_job(title: str, description: str) -> bool:
+    """
+    True when the title or description mentions a core tech keyword as a whole
+    word (e.g. "AI", "ML", "Python", "software engineer"). Used by the pipelines
+    as an escape hatch from the semantic pre-filter for clearly-tech listings.
+    """
+    return bool(_TECH_KEYWORD_PATTERN.search(f"{title or ''} {description or ''}"))

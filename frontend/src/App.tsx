@@ -21,6 +21,8 @@ interface Job {
   match_score: number | null;
   match_reasoning: string | null;
   status: string;
+  role_type: string | null;
+  work_mode: string | null;
 }
 
 interface Stats {
@@ -352,7 +354,9 @@ export default function App() {
   /* ── Filtered Jobs for Display ─────────────────────────────────────────── */
 
   const displayedJobs = jobs.filter(j => {
-    if (minScoreFilter > 0 && (j.match_score || 0) < minScoreFilter) return false;
+    // Unscored jobs have match_score null (no real JD to evaluate) — never hide
+    // them behind the score slider; the card labels them "Unscored".
+    if (minScoreFilter > 0 && j.match_score != null && j.match_score < minScoreFilter) return false;
     // Client-side safety: if an opening was rejected > 24 hours ago, filter it out immediately
     if (j.status === 'rejected' && j.updated_at) {
       const updatedMs = new Date(j.updated_at).getTime();
@@ -513,7 +517,7 @@ export default function App() {
         <header className="top-header">
           <div className="flex items-center gap-3">
             <h1 className="text-[20px] font-bold text-[#0f1c2b] tracking-tight">Internship Agent</h1>
-            <span className="text-[12px] text-[#7a95b0] font-medium hidden sm:inline">• Strictly Remote, Online & Virtual AI Sourcing</span>
+            <span className="text-[12px] text-[#7a95b0] font-medium hidden sm:inline">• India-only AI Sourcing (Onsite, Hybrid & Remote)</span>
           </div>
 
           <div className="flex items-center gap-4">
@@ -576,7 +580,7 @@ export default function App() {
                     <span className="text-[26px] font-bold text-[#0f1c2b] leading-none">
                       {stats?.total_jobs ?? jobs.length}
                     </span>
-                    <span className="text-[11px] text-[#7a95b0] mb-0.5">+12% today</span>
+                    <span className="text-[11px] text-[#7a95b0] mb-0.5">Listings in DB</span>
                   </div>
                 </div>
 
@@ -608,17 +612,17 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Metric 4: Pipeline Runs */}
+                {/* Metric 4: Average Match Score (real value from /api/dashboard/stats) */}
                 <div className="kpi-card" style={{ borderLeftColor: '#e8a94a' }}>
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-[#4a6080] font-bold uppercase tracking-wider text-[11px]">Pipeline Runs</span>
-                    <span className="material-symbols-outlined text-[#e8a94a] text-[20px]">autorenew</span>
+                    <span className="text-[#4a6080] font-bold uppercase tracking-wider text-[11px]">Avg Score</span>
+                    <span className="material-symbols-outlined text-[#e8a94a] text-[20px]">monitoring</span>
                   </div>
                   <div className="flex items-end gap-2">
                     <span className="text-[26px] font-bold text-[#0f1c2b] leading-none">
-                      {stats?.emailed_count ? stats.emailed_count + 1 : 2}
+                      {Math.round(stats?.avg_match_score ?? 0)}
                     </span>
-                    <span className="text-[11px] text-[#7a95b0] mb-0.5">Dual Daily Cron</span>
+                    <span className="text-[11px] text-[#7a95b0] mb-0.5">Mean fit (scored)</span>
                   </div>
                 </div>
               </div>
@@ -644,9 +648,14 @@ export default function App() {
                     onChange={e => setSourceFilter(e.target.value)}
                   >
                     <option value="all">All Platforms</option>
-                    <option value="linkedin">LinkedIn Startups</option>
-                    <option value="remotive">Remotive Startups</option>
-                    <option value="himalayas">Himalayas Startups</option>
+                    <option value="linkedin">LinkedIn (Fallback)</option>
+                    <option value="internshala">Internshala (India)</option>
+                    <option value="peerlist">Peerlist (India)</option>
+                    <option value="wellfound">Wellfound</option>
+                    <option value="yc">Y Combinator</option>
+                    <option value="greenhouse">Greenhouse Boards</option>
+                    <option value="simplifyjobs">SimplifyJobs</option>
+                    <option value="pittcsc">Pitt CSC Tracker</option>
                   </select>
 
                   {/* Score Slider */}
@@ -776,40 +785,52 @@ export default function App() {
                               <div className="flex-1">
                                 <h3 className="job-title">{job.title}</h3>
                                 <p className="job-meta">
-                                  <span className="font-semibold text-[#0f1c2b]">{job.company}</span> • {job.location || 'Remote'}
+                                  <span className="font-semibold text-[#0f1c2b]">{job.company}</span> • {job.location || 'India'}
                                 </p>
                               </div>
 
-                              {/* Circular SVG Score Ring */}
-                              <div className="relative w-[48px] h-[48px] flex items-center justify-center shrink-0">
-                                <svg className="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
-                                  <path
-                                    className="text-[#dce9fe]"
-                                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    strokeWidth="3"
-                                  />
-                                  <path
-                                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                                    fill="none"
-                                    stroke={scoreStyle.stroke}
-                                    strokeDasharray={`${score}, 100`}
-                                    strokeWidth="3"
-                                    className="transition-all duration-1000 ease-out"
-                                  />
-                                </svg>
-                                <span className="absolute text-[13px] font-bold" style={{ color: scoreStyle.text }}>
-                                  {score}
-                                </span>
-                              </div>
+                              {job.match_score == null ? (
+                                /* Unscored — no real job description was available to evaluate */
+                                <div
+                                  className="w-[48px] h-[20px] flex items-center justify-center shrink-0 px-1 bg-[#f1f3f7] border border-[#d4dde8] rounded"
+                                  title="No job description available to score — apply link only"
+                                >
+                                  <span className="text-[9px] font-bold text-[#717880] uppercase tracking-wider">N/A</span>
+                                </div>
+                              ) : (
+                                /* Circular SVG Score Ring */
+                                <div className="relative w-[48px] h-[48px] flex items-center justify-center shrink-0">
+                                  <svg className="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
+                                    <path
+                                      className="text-[#dce9fe]"
+                                      d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      strokeWidth="3"
+                                    />
+                                    <path
+                                      d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                                      fill="none"
+                                      stroke={scoreStyle.stroke}
+                                      strokeDasharray={`${score}, 100`}
+                                      strokeWidth="3"
+                                      className="transition-all duration-1000 ease-out"
+                                    />
+                                  </svg>
+                                  <span className="absolute text-[13px] font-bold" style={{ color: scoreStyle.text }}>
+                                    {score}
+                                  </span>
+                                </div>
+                              )}
                             </div>
 
                             {/* Tags & Skills */}
                             <div className="flex flex-wrap gap-1.5 mb-4">
-                              <span className="tag-badge bg-[#eefcf8] text-[#006b5c] border-[#8df5df]">
-                                <span className="material-symbols-outlined text-[13px]">wifi</span>
-                                REMOTE / VIRTUAL
+                              <span className={`tag-badge ${job.work_mode === 'remote' ? 'bg-[#eefcf8] text-[#006b5c] border-[#8df5df]' : ''}`}>
+                                <span className="material-symbols-outlined text-[13px]">
+                                  {job.work_mode === 'remote' ? 'wifi' : job.work_mode === 'hybrid' ? 'sync' : 'apartment'}
+                                </span>
+                                {(job.work_mode || 'onsite').toUpperCase()}
                               </span>
                               <span className="tag-badge">
                                 <span className="material-symbols-outlined text-[13px]">hub</span>
@@ -965,11 +986,13 @@ export default function App() {
                 <div className="bg-[#f8f9ff] p-4 rounded-xl border border-[#d4dde8]">
                   <h4 className="text-[12px] font-bold uppercase text-[#0f1c2b] mb-2">Active Scraper Priority Cascade</h4>
                   <div className="flex flex-wrap items-center gap-2 text-[12px]">
-                    <span className="px-3 py-1 bg-[#136299] text-white font-semibold rounded-lg">1. LinkedIn Startups</span>
+                    <span className="px-3 py-1 bg-[#136299] text-white font-semibold rounded-lg">1. Internshala</span>
                     <span className="text-[#7a95b0]">→</span>
-                    <span className="px-3 py-1 bg-[#5b9bd5] text-white font-semibold rounded-lg">2. Remotive Startups</span>
+                    <span className="px-3 py-1 bg-[#5b9bd5] text-white font-semibold rounded-lg">2. Peerlist</span>
                     <span className="text-[#7a95b0]">→</span>
-                    <span className="px-3 py-1 bg-[#39a794] text-white font-semibold rounded-lg">3. Himalayas Startups</span>
+                    <span className="px-3 py-1 bg-[#39a794] text-white font-semibold rounded-lg">3. Wellfound + 4 more portals</span>
+                    <span className="text-[#7a95b0]">→</span>
+                    <span className="px-3 py-1 bg-[#7a95b0] text-white font-semibold rounded-lg">LinkedIn India Fallback</span>
                     <span className="text-[#7a95b0]">→</span>
                     <span className="px-3 py-1 bg-[#eef4ff] text-[#003151] font-semibold rounded-lg border border-[#cfe5ff]">
                       🛑 Immediate Early-Stop at {pipelineTarget} matches
@@ -1125,7 +1148,7 @@ export default function App() {
               <div>
                 <h3 className="text-[20px] font-bold text-[#0f1c2b] leading-tight mb-1">{selectedJob.title}</h3>
                 <p className="text-[13px] text-[#4a6080]">
-                  <span className="font-semibold text-[#0f1c2b]">{selectedJob.company}</span> • {selectedJob.location || 'Remote'}
+                  <span className="font-semibold text-[#0f1c2b]">{selectedJob.company}</span> • {selectedJob.location || 'India'}
                 </p>
               </div>
               <button
@@ -1144,7 +1167,11 @@ export default function App() {
                   <p className="text-[12px] text-[#41474f] mt-1">{selectedJob.match_reasoning || 'Strong fit with candidate skills.'}</p>
                 </div>
                 <div className="text-[24px] font-bold text-[#136299] shrink-0 pl-4">
-                  {selectedJob.match_score ?? 0}/100
+                  {selectedJob.match_score == null ? (
+                    <span className="text-[12px] font-bold text-[#717880] uppercase tracking-wider">Unscored — apply link only</span>
+                  ) : (
+                    `${selectedJob.match_score}/100`
+                  )}
                 </div>
               </div>
 

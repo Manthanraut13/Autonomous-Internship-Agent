@@ -26,12 +26,12 @@ The platform continuously monitors top startup job ecosystems, extracts candidat
 
 | Capability | Technical Implementation | Impact |
 |---|---|---|
-| **Startup-First Sourcing** | Cascading scraper targeting **LinkedIn Startups**, **Remotive Startups**, and **Himalayas Startups** | Prioritizes high-velocity startup teams and high-impact intern roles |
-| **Strictly Remote / Virtual / Online** | Filter heuristics and parameters (`f_WT=2%2C3`, Remote APIs, in-office disqualifiers) | Guarantees that 100% of delivered openings offer remote, online, or work-from-home options |
-| **Strictly AI-Only Filtering** | Search vectors locked exclusively to AI, GenAI, LLM, Agentic AI, and ML domains | Eliminates noise from generic web, generic IT, or non-technical listings |
-| **Internship-First Pre-Filtering** | Automated disqualification regex rejecting senior/lead roles (5+ YOE) | Focuses exclusively on student, trainee, and entry-level talent |
-| **Groq LLM Match Engine** | High-throughput inference via `openai/gpt-oss-120b` with automatic model fallback cascade | Provides accurate, differentiated 0–100 match scoring in under 500ms |
-| **Immediate Early-Stop Pipeline** | Traverses priority sources sequentially and halts execution once target quota (25 matches) is met | Reduces API latency and saves up to 80% of token consumption |
+| **India-First Sourcing** | Cascading scraper over 7 portals (Internshala, Peerlist, Wellfound, YC, Greenhouse, SimplifyJobs, Pitt CSC) with a LinkedIn India fallback | Prioritizes fresh India-based AI openings with direct apply links |
+| **India-Only Filtering** | Strict location guardrail accepting only Indian locations or India-tagged titles; all work modes (onsite, hybrid, remote) | Delivers only openings you can actually join from India |
+| **AI/ML-Focused Filtering** | AI/GenAI/LLM search queries, a whole-word tech keyword gate, and a semantic pre-filter | Keeps listings inside the AI/ML domain; non-tech roles are dropped before LLM scoring |
+| **Role-Type Classification** | Heuristic classifier labelling internship, full-time, contract and part-time roles, plus remote/hybrid/onsite work mode | Cards and filters show the real role type and work mode |
+| **Groq LLM Match Engine** | High-throughput inference via `openai/gpt-oss-120b` with automatic model fallback cascade | Provides 0–100 fit scoring — only when a real job description is available; short listings are delivered honestly as "unscored, apply link only" |
+| **Immediate Early-Stop Pipeline** | Traverses priority sources sequentially and halts execution once target quota (25 matches) is met | Reduces API latency and token consumption |
 | **Automated Dispatch** | Dual-channel notification via Gmail OAuth 2.0 (CSV attachment) and Twilio WhatsApp API | Delivers decision-ready intelligence directly to inbox and mobile device |
 | **Dual Daily Automation** | Automated serverless execution at **9:00 AM** and **9:00 PM IST** via GitHub Actions | Zero-maintenance, scheduled daily execution |
 | **Glacial Precision CRM UI** | React 18 + Vite dashboard with live SSE streaming terminal, filters, and resume uploader | Centralized interface for application status tracking and manual pipeline execution |
@@ -59,9 +59,9 @@ The platform continuously monitors top startup job ecosystems, extracts candidat
                                        ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                   2. PRIORITY-ORDERED SCRAPER CASCADE                       │
-│   • Priority 1: LinkedIn Startup AI Internships (Direct & Startup filters)  │
-│   • Priority 2: Remotive Startup AI Openings (Remote tech API)              │
-│   • Priority 3: Himalayas Startup Openings (Remote engineering API)         │
+│   • Priority 1-7: India portals — Internshala, Peerlist, Wellfound, YC,     │
+│     Greenhouse, SimplifyJobs, Pitt CSC                                      │
+│   • Fallback: LinkedIn India search (fills any remaining quota)             │
 └──────────────────────────────────────┬──────────────────────────────────────┘
                                        │
                                        ▼
@@ -107,7 +107,7 @@ The platform continuously monitors top startup job ecosystems, extracts candidat
 | **Database & ORM** | PostgreSQL (Render Cloud), SQLite (Local Fallback), SQLAlchemy 2.0 |
 | **Frontend UI** | React 18, TypeScript, Vite 8, Vanilla CSS Design System, Lucide / Material Symbols |
 | **Document Processing** | PyMuPDF (`fitz`), pdfplumber, pypdf |
-| **Scraping & Ingestion** | Requests, BeautifulSoup4, Public API Integrations (LinkedIn, Remotive, Himalayas) |
+| **Scraping & Ingestion** | Requests, BeautifulSoup4, Public API Integrations (Internshala, Peerlist, Wellfound, YC, Greenhouse, SimplifyJobs, Pitt CSC, LinkedIn) |
 | **Notification Services** | Google Gmail API (OAuth 2.0 MIME), Twilio Messaging API (WhatsApp), SendGrid API |
 | **Scheduling & CI/CD** | GitHub Actions Cron, APScheduler (`AsyncIOScheduler`), Render Web Services |
 
@@ -200,7 +200,7 @@ The web interface is built on the **Glacial Precision** design system, combining
    - Real-time counters for **Scraped Jobs**, **Qualified Openings**, **Applied Submissions**, and **Pipeline Executions**.
 4. **Interactive Filter Toolbar**:
    - Live debounced search by role or company name.
-   - Platform filtering (LinkedIn Startups, Remotive Startups, Himalayas Startups).
+   - Platform filtering (LinkedIn, Internshala, Peerlist, Wellfound, YC, Greenhouse, SimplifyJobs, Pitt CSC).
    - Match score threshold slider.
    - Status pill toggles (`ALL`, `SAVED`, `APPLIED`, `REJECTED`).
    - Primary **Run Pipeline** button with live status feedback.

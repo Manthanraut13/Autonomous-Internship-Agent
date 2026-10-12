@@ -19,6 +19,13 @@ from config.prompts import MATCH_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
+# Minimum job-description length required before the LLM may score a listing.
+# Below this, the "description" is a synthetic one-liner built by the scrapers
+# (e.g. "AI Engineer position at Acme. Location: Bengaluru."), and scoring it
+# produces fake precision — the LLM happily returns 90+ for a template string.
+# Enrichment in the pipelines is triggered by this same constant.
+MIN_LLM_DESCRIPTION_CHARS = 400
+
 
 class MatchResult(BaseModel):
     """Pydantic model for the structured JSON output from the LLM."""
@@ -41,7 +48,24 @@ def match_resume_to_job(resume_text: str, job_description: str, max_retries: int
     Compares a candidate's resume to a job description using a Groq LLM
     and returns a structured evaluation with realistic, differentiated scoring.
     Retries automatically on 429 rate limits and falls back across active models.
+
+    Jobs whose description is still shorter than MIN_LLM_DESCRIPTION_CHARS
+    after enrichment are NOT scored: there is no real JD to evaluate, so a
+    score would be fabricated. They return score=None ("apply link only").
     """
+    if not job_description or len(job_description.strip()) < MIN_LLM_DESCRIPTION_CHARS:
+        return {
+            "score": None,
+            "reasoning": (
+                "Unscored — no real job description available for this listing "
+                f"(text is {len((job_description or '').strip())} chars, "
+                f"{MIN_LLM_DESCRIPTION_CHARS} required). "
+                "Apply link only; no fit evaluation was performed."
+            ),
+            "key_matches": [],
+            "gaps": [],
+        }
+
     candidate_models = [
         settings.groq_model,
         "openai/gpt-oss-120b",

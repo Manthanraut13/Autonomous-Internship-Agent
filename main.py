@@ -32,14 +32,13 @@ if BASE_DIR not in sys.path:
 
 import json
 import time
-import uuid
+import asyncio
 import hmac
 import base64
 import hashlib
 import secrets
-import asyncio
 from datetime import datetime
-from typing import Dict, Any, Optional, AsyncGenerator, List, Set, Tuple
+from typing import Dict, Any, Optional, AsyncGenerator
 
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -54,6 +53,7 @@ from apscheduler.triggers.cron import CronTrigger
 from config.settings import settings
 from db.database import get_db, get_db_context, init_db, cleanup_expired_rejected_jobs
 from db.models import Job, PipelineRun
+from tools.auth_guard import LoginRateLimiter
 
 # --------------------------------------------------------------------------- #
 # Security & Token Authentication (HMAC-SHA256)                               #
@@ -181,16 +181,16 @@ async def startup_event():
     try:
         scheduler.add_job(
             scheduled_pipeline_execution,
-            trigger=CronTrigger(hour=9, minute=0),
+            trigger=CronTrigger(hour=9, minute=0, timezone="Asia/Kolkata"),
             id="morning_run",
-            name="Morning Run (09:00 AM)",
+            name="Morning Run (09:00 AM IST)",
             replace_existing=True,
         )
         scheduler.add_job(
             scheduled_pipeline_execution,
-            trigger=CronTrigger(hour=21, minute=0),
+            trigger=CronTrigger(hour=21, minute=0, timezone="Asia/Kolkata"),
             id="evening_run",
-            name="Evening Run (09:00 PM)",
+            name="Evening Run (09:00 PM IST)",
             replace_existing=True,
         )
         scheduler.start()
@@ -254,10 +254,28 @@ async def serve_dashboard():
 # Authentication Endpoints                                                     #
 # --------------------------------------------------------------------------- #
 
+# Brute-force guard: per-IP failure window (5 fails / 15 min → 429) plus a
+# constant 1s delay on every failed attempt. In-memory: fine for this
+# single-process app; would need a shared store if it ever runs multiple workers.
+_login_limiter = LoginRateLimiter(max_failures=5, window_secs=900)
+
+
+def _client_ip(request: Request) -> str:
+    # First X-Forwarded-For hop as set by the hosting proxy (Render).
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
 @app.post("/api/auth/login")
-async def login(credentials: Dict[str, str]):
+async def login(request: Request, credentials: Dict[str, str]):
     username = credentials.get("username", "").strip()
     password = credentials.get("password", "").strip()
+
+    client_ip = _client_ip(request)
+    if _login_limiter.locked_out(client_ip):
+        raise HTTPException(status_code=429, detail="Too many failed login attempts. Try again later.")
 
     admin_user = settings.admin_username or "admin"
     admin_pass = settings.admin_password
@@ -273,9 +291,12 @@ async def login(credentials: Dict[str, str]):
     valid_pass = secrets.compare_digest(password, admin_pass)
 
     if not (valid_user and valid_pass):
-        logger.warning(f"Failed login attempt for user: '{username}'")
+        _login_limiter.record_failure(client_ip)
+        logger.warning(f"Failed login attempt for user: '{username}' from {client_ip}")
+        await asyncio.sleep(1.0)  # constant delay blunts credential stuffing
         raise HTTPException(status_code=401, detail="Invalid username or password.")
 
+    _login_limiter.reset(client_ip)
     token = create_access_token(username)
     logger.info(f"Successful login for user: '{username}'")
     return {
@@ -559,15 +580,28 @@ async def stream_pipeline(
     admin: str = Depends(require_admin)
 ):
     """
-    Server-Sent Events endpoint that runs the multi-wave deduplicated pipeline inline
-    and streams real-time feedback. Protected with require_admin.
+    Server-Sent Events endpoint that runs the shared pipeline core
+    (tools.pipeline_core.process_jobs) in a worker thread and streams its
+    progress events live. Protected with require_admin.
     """
+    import threading
+
     async def event_generator() -> AsyncGenerator[dict, None]:
-        run_start = datetime.utcnow()
-        email_sent = False
-        whatsapp_sent = False
-        csv_path = None
-        scored_jobs: List[Dict[str, Any]] = []
+        from tools.pipeline_core import process_jobs
+
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue(maxsize=512)
+        abort = threading.Event()
+
+        def worker():
+            try:
+                for ev in process_jobs(target_matches=target, threshold=threshold,
+                                       source="dashboard", should_abort=abort.is_set):
+                    loop.call_soon_threadsafe(queue.put_nowait, ("event", ev))
+            except Exception as e:
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e)))
+
+        threading.Thread(target=worker, daemon=True, name="pipeline-worker").start()
 
         def evt(step: str, message: str, data: Any = None) -> dict:
             payload = {"step": step, "message": message, "timestamp": datetime.utcnow().isoformat()}
@@ -575,505 +609,21 @@ async def stream_pipeline(
                 payload["data"] = data
             return {"event": "pipeline", "data": json.dumps(payload)}
 
-        try:
-            # ── Step 1: Parse resume ─────────────────────────────────────
-            yield evt("resume", "Locating and parsing candidate resume...")
-            await asyncio.sleep(0.1)
-
-            from tools.resume_parser import extract_text_from_pdf, get_search_queries_from_resume
-
-            resume_path = None
-            for candidate in [
-                os.path.join(BASE_DIR, "Manthan_Raut.pdf"),
-                os.path.join(BASE_DIR, "Manthan_Raut_Resume (1).pdf"),
-                os.path.join(BASE_DIR, "data", "current_resume.pdf"),
-            ]:
-                if os.path.isfile(candidate):
-                    resume_path = candidate
-                    break
-
-            if not resume_path:
-                yield evt("error", "No resume found. Place Manthan_Raut.pdf in the project root.")
+        while True:
+            if await request.is_disconnected():
+                abort.set()
                 return
-
-            resume_text = extract_text_from_pdf(resume_path)
-            yield evt("resume", f"Resume loaded: {os.path.basename(resume_path)} ({len(resume_text)} chars)")
-            await asyncio.sleep(0.1)
-
-            # Pre-compute resume embeddings once
-            yield evt("resume", "Generating vector embeddings for candidate resume sections...")
-            from tools.semantic_matcher import ResumeEmbedder, classify_role_type, classify_work_mode
-            from tools.jd_fetcher import fetch_full_job_description
-            embedder = await asyncio.to_thread(ResumeEmbedder, resume_path)
-            yield evt("resume", f"Vector embeddings ready ({len(embedder.chunks)} semantic sections cached)")
-            await asyncio.sleep(0.1)
-
-            # ── Step 2: Generate search queries ──────────────────────────
-            yield evt("queries", "Generating AI, GenAI & ML search queries (India Only)...")
-            await asyncio.sleep(0.1)
-
-            search_queries = get_search_queries_from_resume(resume_path)
-            core_ai_queries = [
-                "AI Engineer", "GenAI Developer", "LLM Engineer",
-                "Machine Learning Engineer", "AI Automation Engineer",
-                "AI Agent Developer", "AI Intern", "Machine Learning Intern",
-                "GenAI Intern", "Data Science Intern", "Python AI Developer", "NLP Engineer"
-            ]
-            for q in core_ai_queries:
-                if q not in search_queries:
-                    search_queries.append(q)
-
-            yield evt("queries", f"Active AI Queries ({len(search_queries)}): {', '.join(search_queries[:5])}...", search_queries)
-            await asyncio.sleep(0.1)
-
-            # ── Step 3: Load existing DB signatures to prevent duplicates ─
-            with get_db_context() as db:
-                # Free database storage by permanently purging expired rejected openings (>24h)
-                cleaned_count = cleanup_expired_rejected_jobs(db, max_age_hours=24)
-                if cleaned_count:
-                    yield evt("cleanup", f"🧹 Storage cleanup: permanently purged {cleaned_count} rejected opening(s) older than 24h.")
-                db_links = set(r[0].strip().lower() for r in db.query(Job.link).all() if r[0])
-                db_apply_urls = set(r[0].strip().lower() for r in db.query(Job.apply_url).all() if r[0])
-                db_signatures = set((r[0].strip().lower(), r[1].strip().lower()) for r in db.query(Job.title, Job.company).all() if r[0] and r[1])
-
-            # ── Step 4: Primary Portals Scraping & Immediate Evaluation ──
-            from tools.job_api import get_scraper_platforms, is_located_in_india, fetch_linkedin_jobs
-            from tools.jd_matcher import match_resume_to_job
-
-            seen_in_run_links: Set[str] = set()
-            seen_in_run_signatures: Set[Tuple[str, str]] = set()
-            total_scraped_count = 0
-            platforms = get_scraper_platforms()
-
-            yield evt("scraping", f"Starting primary portal search (Target: {target} verified India AI openings)...")
-            await asyncio.sleep(0.1)
-
-            # ── Node 1: Primary Portals Search ────────────────────────────
-            for p_idx, platform in enumerate(platforms, 1):
-                if len(scored_jobs) >= target:
-                    break
-
-                plat_name = platform["name"]
-                plat_fn = platform["fn"]
-
-                yield evt("scraping", f"🚀 [Priority {p_idx}/{len(platforms)}] Searching {plat_name} (Remaining: {target - len(scored_jobs)} matches)...")
-                await asyncio.sleep(0.1)
-
-                for query in search_queries:
-                    if await request.is_disconnected():
-                        return
-                    if len(scored_jobs) >= target:
-                        break
-
-                    yield evt("scraping", f"[{plat_name}] Fetching: \"{query}\" (24h)...")
-                    try:
-                        raw_jobs = await asyncio.to_thread(plat_fn, query, 10, 24, 0)
-                    except Exception as e:
-                        yield evt("scraping", f"⚠️ Scraper warning on {plat_name}: {e}")
-                        continue
-
-                    total_scraped_count += len(raw_jobs)
-
-                    for j in raw_jobs:
-                        if await request.is_disconnected():
-                            return
-                        if len(scored_jobs) >= target:
-                            break
-
-                        link = (j.get("link") or "").strip().lower()
-                        apply_url = (j.get("apply_url") or "").strip().lower()
-                        title = (j.get("title") or "").strip().lower()
-                        company = (j.get("company") or "").strip().lower()
-                        sig = (title, company)
-
-                        if (link in db_links or
-                            apply_url in db_apply_urls or
-                            sig in db_signatures or
-                            link in seen_in_run_links or
-                            sig in seen_in_run_signatures):
-                            continue
-
-                        # Strict India location guardrail (All work arrangements & employment types in India)
-                        if not is_located_in_india(j):
-                            continue
-
-                        if link: seen_in_run_links.add(link)
-                        if apply_url: seen_in_run_links.add(apply_url)
-                        if title and company: seen_in_run_signatures.add(sig)
-
-                        desc = j.get("description", "")
-                        if len(desc.strip()) < 400 and j.get("link"):
-                            try:
-                                enriched = await asyncio.to_thread(fetch_full_job_description, j["link"])
-                                if enriched and len(enriched) > len(desc):
-                                    desc = enriched
-                                    j["description"] = desc
-                            except Exception:
-                                pass
-
-                        if not desc or len(desc.strip()) < 30:
-                            continue
-
-                        # Classify role type & work mode
-                        role_type = classify_role_type(j)
-                        work_mode = classify_work_mode(j)
-                        j["role_type"] = role_type
-                        j["work_mode"] = work_mode
-
-                        # Pre-filter using local embeddings
-                        sem_score = await asyncio.to_thread(embedder.compute_semantic_score, desc, j.get("title", ""))
-                        j["semantic_score"] = sem_score
-
-                        # Check for explicit AI/ML/Developer keywords
-                        combined_text = f"{j.get('title', '')} {desc}".lower()
-                        is_explicit_tech = any(
-                            k in combined_text
-                            for k in [
-                                "ai", "artificial intelligence", "machine learning", "ml", "genai", "llm",
-                                "agent", "deep learning", "nlp", "computer vision", "python", "data science",
-                                "developer", "software engineer", "intern", "engineer"
-                            ]
-                        )
-
-                        if not is_explicit_tech and sem_score < 15.0:
-                            yield evt("matching", f"⏩ [{role_type.upper()}|{work_mode.upper()}] Pre-filtered non-tech role ({sem_score}/100): {j['title']} @ {j['company']}")
-                            continue
-
-                        yield evt("matching", f"[{len(scored_jobs)}/{target} Found] 🔄 Scoring [{role_type.upper()}|{work_mode.upper()}]: {j['title']} @ {j['company']} (Semantic: {sem_score})...")
-
-                        try:
-                            result = await asyncio.to_thread(match_resume_to_job, resume_text, desc)
-                            score = result.get("score", 0)
-                            reasoning = result.get("reasoning", "")
-                            key_matches = result.get("key_matches", [])
-                        except Exception as e:
-                            yield evt("matching", f"❌ Error scoring {j['title']}: {e}")
-                            continue
-
-                        j["match_score"] = score
-                        j["match_reasoning"] = reasoning
-                        j["key_matches"] = key_matches
-
-                        # Create full job object for optimistic UI updates in frontend
-                        job_card = {
-                            "id": -(len(scored_jobs) + 1),
-                            "job_id": j.get("job_id", f"job-{uuid.uuid4().hex[:8]}"),
-                            "title": j["title"],
-                            "company": j["company"],
-                            "description": j.get("description", "")[:2000],
-                            "link": j.get("link", ""),
-                            "apply_url": j.get("apply_url", ""),
-                            "location": j.get("location", "India"),
-                            "source": j.get("source", "aggregated"),
-                            "posted_at": str(j.get("posted_at", "")),
-                            "match_score": score,
-                            "match_reasoning": reasoning,
-                            "semantic_score": sem_score,
-                            "role_type": role_type,
-                            "work_mode": work_mode,
-                            "status": "saved",
-                        }
-
-                        emoji = "✅" if score >= threshold else "⬇️"
-                        yield evt("matching", f"[{len(scored_jobs)+1}/{target}] {emoji} [{role_type.upper()}|{work_mode.upper()}] {j['title']} @ {j['company']} → {score}/100",
-                                  {
-                                      "title": j["title"],
-                                      "company": j["company"],
-                                      "score": score,
-                                      "role_type": role_type,
-                                      "work_mode": work_mode,
-                                      "semantic_score": sem_score,
-                                      "job": job_card if score >= threshold else None,
-                                  })
-
-                        if score >= threshold:
-                            scored_jobs.append(j)
-                            if len(scored_jobs) >= target:
-                                yield evt("matching", f"🎉 Reached exact target of {target} qualified India AI openings on {plat_name}! Halting search.")
-                                break
-
-                        await asyncio.sleep(1.5)
-
-                    await asyncio.sleep(0.05)
-
-            # ── Node 2: LinkedIn Fallback Node (ONLY if quota < target) ────
-            if len(scored_jobs) < target:
-                yield evt("scraping", f"⚠️ Fallback Node Activated: Primary platforms yielded {len(scored_jobs)}/{target} matches. Initiating LinkedIn India search to fulfill quota of {target}...")
-                await asyncio.sleep(0.1)
-
-                for time_window in [24, 72]:
-                    if len(scored_jobs) >= target:
-                        break
-
-                    for offset in [0, 10, 20, 30, 40, 50]:
-                        if len(scored_jobs) >= target:
-                            break
-
-                        for query in search_queries:
-                            if await request.is_disconnected():
-                                return
-                            if len(scored_jobs) >= target:
-                                break
-
-                            yield evt("scraping", f"[LinkedIn Fallback] Querying: \"{query}\" (offset={offset}, {time_window}h)...")
-                            try:
-                                raw_jobs = await asyncio.to_thread(
-                                    fetch_linkedin_jobs,
-                                    search_query=query,
-                                    location="India",
-                                    limit=10,
-                                    posted_within_hours=time_window,
-                                    start_offset=offset
-                                )
-                            except Exception as e:
-                                yield evt("scraping", f"⚠️ LinkedIn fallback warning: {e}")
-                                continue
-
-                            total_scraped_count += len(raw_jobs)
-
-                            for j in raw_jobs:
-                                if await request.is_disconnected():
-                                    return
-                                if len(scored_jobs) >= target:
-                                    break
-
-                                link = (j.get("link") or "").strip().lower()
-                                apply_url = (j.get("apply_url") or "").strip().lower()
-                                title = (j.get("title") or "").strip().lower()
-                                company = (j.get("company") or "").strip().lower()
-                                sig = (title, company)
-
-                                if (link in db_links or
-                                    apply_url in db_apply_urls or
-                                    sig in db_signatures or
-                                    link in seen_in_run_links or
-                                    sig in seen_in_run_signatures):
-                                    continue
-
-                                if not is_located_in_india(j):
-                                    continue
-
-                                if link: seen_in_run_links.add(link)
-                                if apply_url: seen_in_run_links.add(apply_url)
-                                if title and company: seen_in_run_signatures.add(sig)
-
-                                desc = j.get("description", "")
-                                if len(desc.strip()) < 400 and j.get("link"):
-                                    try:
-                                        enriched = await asyncio.to_thread(fetch_full_job_description, j["link"])
-                                        if enriched and len(enriched) > len(desc):
-                                            desc = enriched
-                                            j["description"] = desc
-                                    except Exception:
-                                        pass
-
-                                if not desc or len(desc.strip()) < 30:
-                                    continue
-
-                                role_type = classify_role_type(j)
-                                work_mode = classify_work_mode(j)
-                                j["role_type"] = role_type
-                                j["work_mode"] = work_mode
-
-                                sem_score = await asyncio.to_thread(embedder.compute_semantic_score, desc, j.get("title", ""))
-                                j["semantic_score"] = sem_score
-
-                                combined_text = f"{j.get('title', '')} {desc}".lower()
-                                is_explicit_tech = any(
-                                    k in combined_text
-                                    for k in [
-                                        "ai", "artificial intelligence", "machine learning", "ml", "genai", "llm",
-                                        "agent", "deep learning", "nlp", "computer vision", "python", "data science",
-                                        "developer", "software engineer", "intern", "engineer"
-                                    ]
-                                )
-
-                                if not is_explicit_tech and sem_score < 15.0:
-                                    yield evt("matching", f"⏩ [LinkedIn Fallback] Pre-filtered non-tech role ({sem_score}/100): {j['title']} @ {j['company']}")
-                                    continue
-
-                                yield evt("matching", f"[{len(scored_jobs)}/{target} Found] 🔄 Scoring [LinkedIn Fallback | {role_type.upper()}|{work_mode.upper()}]: {j['title']} @ {j['company']} (Semantic: {sem_score})...")
-
-                                try:
-                                    result = await asyncio.to_thread(match_resume_to_job, resume_text, desc)
-                                    score = result.get("score", 0)
-                                    reasoning = result.get("reasoning", "")
-                                    key_matches = result.get("key_matches", [])
-                                except Exception as e:
-                                    yield evt("matching", f"❌ Error scoring {j['title']}: {e}")
-                                    continue
-
-                                j["match_score"] = score
-                                j["match_reasoning"] = reasoning
-                                j["key_matches"] = key_matches
-
-                                job_card = {
-                                    "id": -(len(scored_jobs) + 1),
-                                    "job_id": j.get("job_id", f"job-{uuid.uuid4().hex[:8]}"),
-                                    "title": j["title"],
-                                    "company": j["company"],
-                                    "description": j.get("description", "")[:2000],
-                                    "link": j.get("link", ""),
-                                    "apply_url": j.get("apply_url", ""),
-                                    "location": j.get("location", "India"),
-                                    "source": j.get("source", "aggregated"),
-                                    "posted_at": str(j.get("posted_at", "")),
-                                    "match_score": score,
-                                    "match_reasoning": reasoning,
-                                    "semantic_score": sem_score,
-                                    "role_type": role_type,
-                                    "work_mode": work_mode,
-                                    "status": "saved",
-                                }
-
-                                emoji = "✅" if score >= threshold else "⬇️"
-                                yield evt("matching", f"[{len(scored_jobs)+1}/{target}] {emoji} [LinkedIn Fallback] {j['title']} @ {j['company']} → {score}/100",
-                                          {
-                                              "title": j["title"],
-                                              "company": j["company"],
-                                              "score": score,
-                                              "role_type": role_type,
-                                              "work_mode": work_mode,
-                                              "semantic_score": sem_score,
-                                              "job": job_card if score >= threshold else None,
-                                          })
-
-                                if score >= threshold:
-                                    scored_jobs.append(j)
-                                    if len(scored_jobs) >= target:
-                                        yield evt("matching", f"🎉 LinkedIn fallback fulfilled the quota of {target} qualified India AI listings!")
-                                        break
-
-                                await asyncio.sleep(1.5)
-
-                            await asyncio.sleep(0.05)
-
-            # Sort and slice top target matches
-            scored_jobs.sort(key=lambda x: x.get("match_score", 0), reverse=True)
-            final_jobs = scored_jobs[:target]
-
-            yield evt("matching", f"Scoring complete! Found {len(final_jobs)} qualified unique India AI matches ({threshold}+ threshold).",
-                      {"matched": len(final_jobs), "total_scraped": total_scraped_count})
-            await asyncio.sleep(0.1)
-
-            if not final_jobs:
-                yield evt("complete", "No postings met the threshold in the specified timeframe. Pipeline finished.", {"matched": 0})
-                with get_db_context() as db:
-                    run_log = PipelineRun(
-                        started_at=run_start,
-                        completed_at=datetime.utcnow(),
-                        status="success",
-                        jobs_found=total_scraped_count,
-                        jobs_matched=0,
-                        email_sent=False,
-                        source="dashboard"
-                    )
-                    db.add(run_log)
+            try:
+                kind, item = await asyncio.wait_for(queue.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+            if kind == "error":
+                logger.error(f"Pipeline stream error: {item}")
+                yield evt("error", f"Pipeline error: {item}")
                 return
-
-            # ── Step 5: Save to Database ─────────────────────────────────
-            yield evt("saving", f"Saving {len(final_jobs)} new listings to database...")
-            await asyncio.sleep(0.1)
-
-            import dateutil.parser as dp
-
-            with get_db_context() as db:
-                for job in final_jobs:
-                    posted_at_val = job.get("posted_at")
-                    if isinstance(posted_at_val, str) and posted_at_val:
-                        try: posted_at_val = dp.parse(posted_at_val)
-                        except Exception: posted_at_val = None
-                    elif not posted_at_val:
-                        posted_at_val = None
-
-                    db_job = Job(
-                        job_id=f"job-{uuid.uuid4().hex[:8]}",
-                        title=job["title"],
-                        company=job["company"],
-                        description=job.get("description", "")[:2000],
-                        link=job["link"],
-                        apply_url=job.get("apply_url", ""),
-                        location=job.get("location", "India"),
-                        source=job.get("source", "aggregated"),
-                        posted_at=posted_at_val,
-                        match_score=job["match_score"],
-                        match_reasoning=job.get("match_reasoning", ""),
-                        semantic_score=job.get("semantic_score"),
-                        role_type=job.get("role_type", "internship"),
-                        work_mode=job.get("work_mode", "onsite"),
-                        status="saved",
-                    )
-                    db.add(db_job)
-                db.commit()
-
-            yield evt("saving", f"Saved {len(final_jobs)} unique listings to database.")
-            await asyncio.sleep(0.1)
-
-            # ── Step 6: Export CSV ───────────────────────────────────────
-            yield evt("csv", "Generating structured CSV report with direct apply links...")
-            await asyncio.sleep(0.1)
-
-            from tools.csv_exporter import export_jobs_to_csv
-
-            csv_filename = f"internships_{time.strftime('%Y%m%d_%H%M%S')}.csv"
-            csv_path = await asyncio.to_thread(export_jobs_to_csv, final_jobs, csv_filename)
-
-            if csv_path:
-                yield evt("csv", f"CSV report exported: {csv_filename}")
-            await asyncio.sleep(0.1)
-
-            # ── Step 7: Email CSV ────────────────────────────────────────
-            if csv_path:
-                yield evt("email", f"Delivering CSV report to {settings.recipient_email} via Gmail OAuth...")
-                await asyncio.sleep(0.1)
-
-                from tools.email_sender import send_csv_email
-
-                email_sent = await asyncio.to_thread(send_csv_email, csv_path, len(final_jobs))
-                if email_sent:
-                    yield evt("email", f"✅ CSV report delivered to {settings.recipient_email}!")
-                else:
-                    yield evt("email", "⚠️ Email delivery failed or is not configured.")
-                await asyncio.sleep(0.1)
-
-            # ── Step 8: WhatsApp Notification ────────────────────────────
-            yield evt("whatsapp", "Sending WhatsApp summary notification...")
-            await asyncio.sleep(0.1)
-
-            if settings.whatsapp_from and settings.user_whatsapp_number:
-                from tools.whatsapp_handler import send_whatsapp_summary
-                whatsapp_sent = await asyncio.to_thread(send_whatsapp_summary, settings.user_whatsapp_number, final_jobs)
-                if whatsapp_sent:
-                    yield evt("whatsapp", "📲 WhatsApp notification sent successfully!")
-                else:
-                    yield evt("whatsapp", "⚠️ WhatsApp notification failed.")
-            else:
-                yield evt("whatsapp", "WhatsApp notification skipped (not fully configured).")
-            await asyncio.sleep(0.1)
-
-            # ── Step 9: Save Run Log ─────────────────────────────────────
-            with get_db_context() as db:
-                run_log = PipelineRun(
-                    started_at=run_start,
-                    completed_at=datetime.utcnow(),
-                    status="success",
-                    jobs_found=total_scraped_count,
-                    jobs_matched=len(final_jobs),
-                    email_sent=bool(email_sent),
-                    whatsapp_sent=bool(whatsapp_sent),
-                    csv_path=csv_path,
-                    source="dashboard"
-                )
-                db.add(run_log)
-                db.commit()
-
-            # ── Complete ─────────────────────────────────────────────────
-            yield evt("complete", f"Pipeline complete! {len(final_jobs)} unique AI listings delivered.",
-                      {"matched": len(final_jobs), "total_scraped": total_scraped_count})
-
-        except Exception as e:
-            logger.error(f"Pipeline stream error: {e}", exc_info=True)
-            yield evt("error", f"Pipeline error: {str(e)}")
+            yield evt(item["step"], item["message"], item.get("data"))
+            if item["step"] in ("complete", "aborted", "error"):
+                return
 
     return EventSourceResponse(event_generator())
 

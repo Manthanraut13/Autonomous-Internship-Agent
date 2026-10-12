@@ -41,7 +41,7 @@ Base.__allow_unmapped__ = True
 class Job(Base):
     """
     Represents a single internship / job listing scraped from an external
-    platform (Remotive, Arbeitnow, Himalayas, LinkedIn, etc.).
+    platform (Internshala, Peerlist, Wellfound, YC, Greenhouse, LinkedIn, etc.).
 
     Attributes:
         id              : Auto-incremented primary key.

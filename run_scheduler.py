@@ -53,21 +53,21 @@ def start_scheduler(run_immediately: bool = False):
     """Initializes and runs the blocking scheduler."""
     scheduler = BlockingScheduler()
 
-    # Schedule 1: Morning Run at 09:00 AM
+    # Schedule 1: Morning Run at 09:00 AM IST (explicit tz — default is server UTC)
     scheduler.add_job(
         scheduled_job,
-        trigger=CronTrigger(hour=9, minute=0),
+        trigger=CronTrigger(hour=9, minute=0, timezone="Asia/Kolkata"),
         id="morning_pipeline_run",
-        name="Morning Internship Pipeline (09:00 AM)",
+        name="Morning Internship Pipeline (09:00 AM IST)",
         replace_existing=True,
     )
 
-    # Schedule 2: Evening Run at 09:00 PM (21:00)
+    # Schedule 2: Evening Run at 09:00 PM IST (21:00)
     scheduler.add_job(
         scheduled_job,
-        trigger=CronTrigger(hour=21, minute=0),
+        trigger=CronTrigger(hour=21, minute=0, timezone="Asia/Kolkata"),
         id="evening_pipeline_run",
-        name="Evening Internship Pipeline (09:00 PM)",
+        name="Evening Internship Pipeline (09:00 PM IST)",
         replace_existing=True,
     )
 
