@@ -1,27 +1,31 @@
 """
 tools/job_api.py
 ----------------
-Fetches real, live AI listings strictly located in India across verified platforms.
+Fetches real, live AI listings strictly located in India across the portals listed in
+internship_sources_autonomous_agent.csv, in that file's order.
 
-Primary Platforms (Quotas total 25):
-  1. Internshala           — India tech & AI internships (Quota: 8)
-  2. Peerlist              — Indian tech founders & modern startups (Quota: 4)
-  3. Wellfound             — AngelList Talent startup ecosystem in India (Quota: 4)
-  4. Y Combinator          — Hacker News Algolia Job Search & WAAS (Quota: 3)
-  5. Greenhouse.io Boards  — Public ATS boards for tech companies in India (Quota: 3)
-  6. SimplifyJobs GitHub   — Real-time crowdsourced tech tracker (Quota: 2)
-  7. Pittcsc GitHub Tracker— Summer internship repository (Quota: 1)
+Main portals (get_scraper_platforms, CSV "Main" rows):
+  Y Combinator, Startup Jobs, Wellfound, Cutshort, LinkedIn, Instahyre, Hirist, Naukri.
 
-Fallback Reserve Node:
-  LinkedIn Guest API       — Activated only if primary portals yield < 25 qualified openings.
+Fallback portals (get_fallback_platforms, CSV "Fallback" rows, only when still under
+target): Hacker News Who is Hiring, Remote OK, Remotive, Himalayas, We Work Remotely,
+Built In, Welcome to the Jungle, Underdog.io, NoDesk, Remote Rocketship, InternDoor,
+Jobsii, Greenhouse, Lever, Ashby, Workable, Direct Startup Career Pages.
 
+Each fetcher uses the method that actually works for that platform (public API, RSS/JSON
+feed, server-rendered page payload, or JSON-LD) and returns [] — never fabricated jobs —
+when a platform walls its data behind logins or captchas.
 Total hard target: 25 qualified, unique India listings.
 """
 
+import html
 import json
 import logging
 import re
+import time
 import urllib.parse
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
 
@@ -31,8 +35,6 @@ try:
 except ImportError:
     requests = None
     BeautifulSoup = None
-
-from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -57,9 +59,9 @@ _NOW = lambda: datetime.now(timezone.utc)
 
 
 def _clean_html(text: str) -> str:
-    """Strip HTML tags and collapse whitespace."""
+    """Strip HTML tags, unescape entities (&#x27; etc.), collapse whitespace."""
     cleaned = re.sub(r"<[^>]+>", " ", text)
-    return re.sub(r"\s+", " ", cleaned).strip()[:1500]
+    return re.sub(r"\s+", " ", html.unescape(cleaned)).strip()[:1500]
 
 
 def parse_job_date(val: Optional[str]) -> Optional[datetime]:
@@ -95,9 +97,11 @@ def parse_job_date(val: Optional[str]) -> Optional[datetime]:
         if unit == "month": return _NOW() - timedelta(days=num * 30)
         if unit == "year": return _NOW() - timedelta(days=num * 365)
 
-    # ISO-8601 and calendar date strings
+    # ISO-8601 and calendar date strings. No yearless "%b %d": it would
+    # manufacture a year-1900 timestamp (never fabricate) and is deprecated
+    # in Python 3.15 — such inputs now honestly fall through to None.
     for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ",
-                "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d", "%b %d, %Y", "%b %d"):
+                "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d", "%b %d, %Y"):
         try:
             dt = datetime.strptime(val[:26], fmt)
             if dt.tzinfo is None:
@@ -106,34 +110,25 @@ def parse_job_date(val: Optional[str]) -> Optional[datetime]:
         except ValueError:
             continue
 
-    return None
+    # ISO-8601 without zone markers, e.g. '2026-09-22t06:13:05.896001'
+    try:
+        dt = datetime.fromisoformat(val)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        pass
+
+    # RFC 822 (RSS pubDate) e.g. 'mon, 12 oct 2026 03:02:30 +0000'
+    try:
+        dt = parsedate_to_datetime(val)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError):
+        return None
 
 _parse_iso = parse_job_date  # Backward compatibility alias
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Internship Title Filter
-# ──────────────────────────────────────────────────────────────────────────────
-
-# Compile once — word-boundary patterns so "international", "internal" don't match
-_INTERN_TITLE_PATTERN = re.compile(
-    r"\b(?:intern(?:ship)?|co[-\s]?op|coop|trainee|fellowship|fellow|apprentice)\b",
-    re.IGNORECASE
-)
-
-def _is_internship_title(title: str) -> bool:
-    """
-    Returns True ONLY if the job title contains an internship keyword at a word boundary.
-    Substring 'intern' in 'international' or 'internal' returns False.
-
-    Examples:
-      'Software Engineer Intern (Summer)'     -> True
-      'Director, US International Tax'        -> False  (was leaking before)
-      'IT Engineer, Internal AI Infrastructure' -> False (was leaking before)
-      'ML Research Fellowship'                -> True
-      'Internship: AI/ML'                     -> True
-    """
-    return bool(_INTERN_TITLE_PATTERN.search(title))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -270,9 +265,9 @@ def is_located_in_india(job: Dict[str, Any]) -> bool:
         return True
 
     # 3. Empty / generic location: only the TITLE can prove India.
-    #    (Removed the old `source == "internshala"` bypass — platform name
-    #     is not location evidence. Removed the description scan — several
-    #     scrapers build synthetic description text.)
+    #    (Removed a former source-name bypass — platform name is not location
+    #     evidence. Removed the description scan — several scrapers build
+    #     synthetic description text.)
     if loc in ["remote", "work from home", "wfh", "anywhere", "open", ""]:
         return bool(_india_place_from_text(title))
 
@@ -585,157 +580,831 @@ def fetch_yc_jobs(search_query: str = "AI Engineer", limit: int = 10,
 
 
 # ---------------------------------------------------------------------------
-# 3. Internshala + Adzuna (Primary Platform — India Tech Internships & Jobs)
+# 3. CSV portal fetchers — see internship_sources_autonomous_agent.csv
+#    Each portal uses the method that actually works for that platform:
+#    public JSON API, RSS/JSON feed, server-rendered Next.js payload, or
+#    structured JSON-LD. Fetchers never raise; failures log and return [].
 # ---------------------------------------------------------------------------
-def fetch_internshala_jobs(search_query: str = "AI Engineer", limit: int = 10,
-                           posted_within_hours: int = 168) -> List[Dict[str, Any]]:
-    """
-    Scrapes Internshala for AI/ML/Data internships and full-time jobs across India.
-    Falls back to Adzuna India API if Adzuna credentials are configured.
-    """
-    if requests is None or BeautifulSoup is None:
+
+# Browser-grade headers for edges that challenge plain server headers (e.g. WTTJ).
+_BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "sec-ch-ua": '"Chromium";v="126", "Google Chrome";v="126"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"macOS"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+# url -> monotonic ts of the last challenge/empty hit; avoids re-hitting walled pages.
+_NEGATIVE_CACHE: Dict[str, float] = {}
+
+
+def _recently_empty(key: str, ttl_secs: int = 1800) -> bool:
+    ts = _NEGATIVE_CACHE.get(key)
+    return ts is not None and (time.monotonic() - ts) < ttl_secs
+
+
+def _mark_empty(key: str) -> None:
+    _NEGATIVE_CACHE[key] = time.monotonic()
+
+
+def _get_json(url: str, params: Optional[Dict[str, Any]] = None,
+              headers: Optional[Dict[str, str]] = None, timeout: int = 12) -> Any:
+    """GET a URL and return parsed JSON, or None on any failure. Shared test seam."""
+    if requests is None:
+        return None
+    try:
+        resp = requests.get(url, params=params, headers=headers or JSON_HEADERS, timeout=timeout)
+        if resp.status_code == 200:
+            return resp.json()
+        logger.debug(f"{url} -> HTTP {resp.status_code}")
+    except Exception as e:
+        logger.debug(f"JSON fetch failed for {url}: {e}")
+    return None
+
+
+def _get_text(url: str, params: Optional[Dict[str, Any]] = None,
+              headers: Optional[Dict[str, str]] = None, timeout: int = 15) -> Optional[str]:
+    """GET a URL and return its text, or None on any failure. Shared test seam."""
+    if requests is None:
+        return None
+    try:
+        resp = requests.get(url, params=params, headers=headers or HEADERS, timeout=timeout)
+        if resp.status_code == 200:
+            return resp.text
+        logger.debug(f"{url} -> HTTP {resp.status_code}")
+    except Exception as e:
+        logger.debug(f"HTML fetch failed for {url}: {e}")
+    return None
+
+
+def _query_terms(search_query: str) -> List[str]:
+    """Lowercased word tokens for free-text boards that lack server-side search."""
+    return [t for t in re.findall(r"[a-z0-9]+", search_query.lower()) if len(t) > 1]
+
+
+def _matches_query(text: str, terms: List[str]) -> bool:
+    if not terms:
+        return True
+    hay = text.lower()
+    return any(t in hay for t in terms)
+
+
+def _split_title_company(title: str) -> tuple:
+    """'Senior Dev at Acme (Bengaluru)' -> ('Senior Dev', 'Acme', 'Bengaluru')."""
+    location = ""
+    paren = re.search(r"\s*\(([^()]+)\)\s*$", title)
+    if paren:
+        location = paren.group(1).strip()
+        title = title[: paren.start()].strip()
+    company = ""
+    at = re.search(r"^(.*?)\s+at\s+(.+)$", title, re.I)
+    if at:
+        title, company = at.group(1).strip(), at.group(2).strip()
+    return title, company, location
+
+
+def _parse_rss_items(xml_text: str) -> List[Dict[str, str]]:
+    """Parse an RSS <channel> into title/link/description/pubDate dicts (CDATA-safe)."""
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
         return []
+    items = []
+    for node in root.iter("item"):
+        def field(tag: str) -> str:
+            el = node.find(tag)
+            return (el.text or "").strip() if el is not None and el.text else ""
+        items.append({"title": field("title"), "link": field("link"),
+                      "description": field("description"), "pubDate": field("pubDate")})
+    return items
 
+
+def _next_data_jobs(html_text: str) -> List[Dict[str, Any]]:
+    """Extract the job array from a Next.js page's __NEXT_DATA__ (Cutshort uses the
+    react-query dehydrated state; other pages may nest it under pageProps)."""
+    m = re.search(r'id="__NEXT_DATA__"[^>]*>(.*?)</script>', html_text or "", re.S)
+    if not m:
+        return []
+    try:
+        data = json.loads(m.group(1))
+    except ValueError:
+        return []
+    try:
+        queries = data["props"]["pageProps"]["dehydratedState"]["queries"]
+        for q in queries:
+            page_data = q.get("state", {}).get("data", {}).get("data", {}).get("pageData", {})
+            if isinstance(page_data.get("jobs"), list) and page_data["jobs"]:
+                return page_data["jobs"]
+    except (KeyError, TypeError, AttributeError):
+        pass
+    return []
+
+
+def fetch_startupjobs_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                           posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'Startup Jobs': official keyless RSS feed (50 recent jobs / 14 days).
+
+    shortcut: the RSS feed has no free-text query, so relevance is token-filtered
+    client-side; upgrade to the key-bearing REST API (api.startup.jobs/v1/jobs)."""
+    xml = _get_text("https://startup.jobs/feeds/jobs")
+    if not xml:
+        return []
+    terms = _query_terms(search_query)
     jobs: List[Dict[str, Any]] = []
+    for item in _parse_rss_items(xml):
+        if len(jobs) >= limit:
+            break
+        if not _matches_query(f"{item['title']} {item['description']}", terms):
+            continue
+        title, company, _ = _split_title_company(item["title"])
+        desc = _clean_html(item["description"])[:1500]
+        jobs.append({
+            "title": title or item["title"],
+            "company": company,
+            "description": desc,
+            "link": item["link"],
+            "apply_url": item["link"],
+            # Feed description is platform-authored listing text (not synthetic),
+            # so an Indian place named there is real location evidence.
+            "location": (_india_place_from_text(desc) or "").title(),
+            "source": "startupjobs",
+            "posted_at": parse_job_date(item["pubDate"]),
+        })
+    return jobs
 
-    # ── Path A: Adzuna India API (if credentials configured) ─────────────
-    adzuna_app_id = getattr(settings, "adzuna_app_id", "") or ""
-    adzuna_api_key = getattr(settings, "adzuna_api_key", "") or ""
-    if adzuna_app_id and adzuna_api_key:
+
+def _cutshort_category_slug(search_query: str) -> str:
+    """Pick a live Cutshort category slug for the query from the /jobs tiles."""
+    global _CUTSHORT_TILES
+    if _CUTSHORT_TILES is None:
+        _CUTSHORT_TILES = []
+        page = _get_text("https://cutshort.io/jobs")
+        m = re.search(r'id="__NEXT_DATA__"[^>]*>(.*?)</script>', page or "", re.S)
+        if m:
+            try:
+                data = json.loads(m.group(1))
+                queries = data["props"]["pageProps"]["dehydratedState"]["queries"]
+                page_data = queries[0]["state"]["data"]["data"]["pageData"]
+                tiles = (page_data.get("topJobsList") or []) + (page_data.get("jobsList") or [])
+                _CUTSHORT_TILES = [t.get("slug", "") for t in tiles if isinstance(t, dict) and t.get("slug")]
+            except (KeyError, IndexError, TypeError, ValueError):
+                pass
+    terms = _query_terms(search_query)
+    for slug in _CUTSHORT_TILES:
+        if any(t in slug for t in terms):
+            return slug
+    return _CUTSHORT_FALLBACK_CATEGORY
+
+
+_CUTSHORT_TILES: Optional[List[str]] = None
+_CUTSHORT_FALLBACK_CATEGORY = "remote-machine-learning-ml-jobs"
+
+
+def fetch_cutshort_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                        posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'Cutshort': no public job API — parse the Next.js __NEXT_DATA__ payload of a
+    category page (the same backend JSON the site itself renders from, no CSS guesswork)."""
+    slug = _cutshort_category_slug(search_query)
+    page = _get_text(f"https://cutshort.io/jobs/{slug}")
+    if not page:
+        return []
+    terms = _query_terms(search_query)
+    jobs: List[Dict[str, Any]] = []
+    for item in _next_data_jobs(page):
+        if len(jobs) >= limit:
+            break
+        title = item.get("headline") or ""
+        company = ((item.get("companyDetails") or {}).get("name")
+                   or (item.get("companyId") or {}).get("name") or "")
+        location = item.get("locationsText") or ""
+        if not _matches_query(f"{title} {company} {' '.join(item.get('allSkills') or [])}", terms):
+            continue
+        link = item.get("publicUrl") or ""
+        if not link:
+            continue
+        desc = _clean_html(item.get("sanitizedComment") or "")[:1500]
+        jobs.append({
+            "title": title,
+            "company": company,
+            "description": desc or f"{title} at {company} (Cutshort listing; full description loads from the link).",
+            "link": link,
+            "apply_url": item.get("authApplyUrl") or link,
+            "location": location,
+            "source": "cutshort",
+            "posted_at": None,  # Cutshort listing payload carries no date field
+        })
+    return jobs
+
+
+def fetch_instahyre_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                         posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'Instahyre': the site's own public search endpoint (GET /api/v1/job_search/),
+    which its frontend calls without auth — approved access, no aggressive scraping."""
+    data = _get_json("https://www.instahyre.com/api/v1/job_search/",
+                     params={"job_title": search_query},
+                     headers={**JSON_HEADERS,
+                              "Referer": "https://www.instahyre.com/search-jobs/"})
+    objects = (data or {}).get("objects") or []
+    jobs: List[Dict[str, Any]] = []
+    for item in objects[: limit * 2]:
+        title = item.get("title") or ""
+        company = (item.get("employer") or {}).get("company_name") or ""
+        keywords = item.get("keywords") or []
+        link = item.get("public_url") or ""
+        if not title or not link:
+            continue
+        jobs.append({
+            "title": title,
+            "company": company,
+            "description": f"{title} at {company}. Skills: {', '.join(keywords)}.",
+            "link": link,
+            "apply_url": link,
+            "location": item.get("locations") or "",
+            "source": "instahyre",
+            "posted_at": None,  # search payload carries no date field
+        })
+        if len(jobs) >= limit:
+            break
+    return jobs
+
+
+def fetch_hirist_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                      posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'Hirist': public search pages render with an empty, captcha-gated job feed and
+    api.hirist.tech answers 401 without a recruiter key (both verified). Attempt the public
+    search page and return whatever feed it exposes; [] when gated — never fabricated.
+    shortcut: no public candidate API; upgrade to api.hirist.tech with a key if issued."""
+    if _recently_empty("hirist"):
+        return []
+    page = _get_text(f"https://www.hirist.tech/search/filter/{urllib.parse.quote(search_query.lower())}.html")
+    if not page:
+        _mark_empty("hirist")
+        return []
+    m = re.search(r'id="__NEXT_DATA__"[^>]*>(.*?)</script>', page, re.S)
+    feed: List[Dict[str, Any]] = []
+    if m:
         try:
-            keywords = search_query.replace(" ", "+")
-            url = (
-                f"https://api.adzuna.com/v1/api/jobs/in/search/1"
-                f"?app_id={adzuna_app_id}&app_key={adzuna_api_key}"
-                f"&results_per_page={min(limit * 2, 20)}&what={keywords}"
-                f"&what_exclude=director+vp+manager"
-            )
-            resp = requests.get(url, headers=JSON_HEADERS, timeout=15)
-            if resp.status_code == 200:
-                data = resp.json()
-                for item in data.get("results", []):
-                    title = item.get("title", "")
-                    company = item.get("company", {}).get("display_name", "Company")
-                    desc = item.get("description", f"{title} at {company}.")
-                    link = item.get("redirect_url", "")
-                    loc = (item.get("location") or {}).get("display_name") or ""
-                    posted_raw = item.get("created", "")
-                    posted_dt = _parse_iso(posted_raw) if posted_raw else _NOW()
-                    if not link:
-                        continue
-                    job_obj = {
-                        "title": title,
-                        "company": company,
-                        "description": desc[:1500],
-                        "link": link,
-                        "apply_url": link,
-                        "location": loc,
-                        "source": "internshala",
-                        "posted_at": posted_dt,
-                    }
-                    if is_located_in_india(job_obj):
-                        jobs.append(job_obj)
-                    if len(jobs) >= limit:
-                        return jobs[:limit]
-        except Exception as e:
-            logger.warning(f"Adzuna API error: {e}")
+            data = json.loads(m.group(1))
+            job_state = data["props"]["pageProps"]["initialState"]["job"]
+            feed = job_state.get("jobfeed") or []
+        except (KeyError, TypeError, ValueError):
+            feed = []
+    if not feed:
+        _mark_empty("hirist")  # feed is captcha-gated server-side; don't refetch every query
+        return []
+    terms = _query_terms(search_query)
+    jobs: List[Dict[str, Any]] = []
+    for item in feed[: limit * 2]:
+        if not isinstance(item, dict):
+            continue
+        title = item.get("title") or item.get("jobTitle") or ""
+        company = item.get("company") or (item.get("companyDetails") or {}).get("name") or ""
+        location = item.get("location") or item.get("locationsText") or ""
+        if not title or not _matches_query(f"{title} {company}", terms):
+            continue
+        link = item.get("link") or item.get("publicUrl") or f"https://www.hirist.tech/jobs/{item.get('id', '')}"
+        jobs.append({
+            "title": title, "company": company,
+            "description": _clean_html(item.get("description") or "")[:1500] or f"{title} at {company} (Hirist listing).",
+            "link": link, "apply_url": link, "location": location,
+            "source": "hirist",
+            "posted_at": parse_job_date(item.get("publishedAt") or item.get("postedAt")),
+        })
+        if len(jobs) >= limit:
+            break
+    return jobs
 
-    # ── Path B: Internshala Scraper (India AI Internships & Jobs) ────────
+
+def fetch_naukri_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                      posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'Naukri': their search API is reCAPTCHA-walled for automation (v3 -> 406
+    'recaptcha required'; v2 answers an empty list from datacenter IPs — both verified).
+    Attempt the lightest public endpoint and translate whatever it returns; [] when
+    challenged rather than pretending to scrape.
+    shortcut: captcha-walled; upgrade on approved/partner API access."""
+    if _recently_empty("naukri"):
+        return []
+    data = _get_json(
+        "https://www.naukri.com/jobapi/v2/search",
+        params={"noOfResults": min(limit * 2, 20), "keyword": search_query,
+                "experience": 0, "pageNo": 1, "urlType": "by_keyword",
+                "seoKey": f"{search_query.lower().replace(' ', '-')}-jobs"},
+        headers={**JSON_HEADERS, "appid": "109", "systemid": "109",
+                 "Referer": "https://www.naukri.com/"},
+    )
+    items = (data or {}).get("list") or (data or {}).get("jobDetails") or []
+    if not items:
+        _mark_empty("naukri")  # recaptcha wall / empty answer — do not hammer per query
+        return []
+    terms = _query_terms(search_query)
+    jobs: List[Dict[str, Any]] = []
+    for item in items:
+        if len(jobs) >= limit:
+            break
+        title = item.get("title") or ""
+        company = item.get("companyName") or (item.get("company") or {}).get("name") or ""
+        location = item.get("jobLocation") or (item.get("location") or {}).get("name") or ""
+        link = item.get("url") or item.get("jobUrl") or ""
+        if not title or not _matches_query(f"{title} {company}", terms):
+            continue
+        if not link:
+            link = f"https://www.naukri.com/jobdetails/{item.get('jobId', '')}"
+        jobs.append({
+            "title": title, "company": company,
+            "description": _clean_html(item.get("jobDescription") or item.get("description") or "")[:1500]
+                           or f"{title} at {company} (Naukri listing).",
+            "link": link, "apply_url": link, "location": location,
+            "source": "naukri",
+            "posted_at": parse_job_date(item.get("postedDate") or item.get("lastDate")),
+        })
+    return jobs
+
+
+def fetch_hn_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                  posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'Hacker News – Who is Hiring': public Algolia HN API — locate the current
+    'Ask HN: Who is hiring' thread, then pull its most recent comments (two-step)."""
+    stories = _get_json("https://hn.algolia.com/api/v1/search_by_date",
+                        params={"query": '"who is hiring"', "tags": "story", "hitsPerPage": 8})
+    thread_id = None
+    for hit in (stories or {}).get("hits", []):
+        if re.search(r"who is hiring", hit.get("title") or "", re.I):
+            thread_id = hit.get("objectID")
+            break
+    if not thread_id:
+        return []
+    comments = _get_json("https://hn.algolia.com/api/v1/search_by_date",
+                         params={"tags": f"comment,story_{thread_id}", "hitsPerPage": min(limit * 4, 60)})
+    terms = _query_terms(search_query)
+    jobs: List[Dict[str, Any]] = []
+    for hit in (comments or {}).get("hits", []):
+        if len(jobs) >= limit:
+            break
+        raw = hit.get("comment_text") or ""
+        text = _clean_html(raw)[:1500]
+        if not text or not _matches_query(text, terms):
+            continue
+        # 'Who is hiring' comments are pipe-delimited or one paragraph per
+        # field (company / role / location) — split on paragraphs first so a
+        # marketing first line doesn't become the company name.
+        blocks = [b for b in re.split(r"</p>|<br\s*/?>", raw, flags=re.I) if b.strip()]
+        first = _clean_html(blocks[0]) if blocks else text[:80]
+        if "|" in first:
+            parts = [p.strip() for p in first.split("|")]
+        elif len(blocks) >= 2:
+            parts = [_clean_html(b) for b in blocks[:3]]
+        else:
+            parts = ["", first]  # one-line comment: role text only, no company evidence
+        company = parts[0][:80]
+        title = parts[1][:120] if len(parts) > 1 and parts[1] else text[:60]
+        location = parts[2][:80] if len(parts) > 2 and parts[2] else ""
+        apply_m = re.search(r"https?://[^\s\"'<>]+", raw)
+        permalink = f"https://news.ycombinator.com/item?id={hit.get('objectID', '')}"
+        jobs.append({
+            "title": title[:120], "company": company[:80],
+            "description": text,
+            "link": apply_m.group(0) if apply_m else permalink,
+            "apply_url": apply_m.group(0) if apply_m else permalink,
+            "location": location,
+            "source": "hn",
+            "posted_at": parse_job_date(hit.get("created_at")),
+        })
+    return jobs
+
+
+def fetch_remoteok_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                        posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'Remote OK': official public JSON API (remoteok.com/api)."""
+    data = _get_json("https://remoteok.com/api")
+    if not isinstance(data, list):
+        return []
+    terms = _query_terms(search_query)
+    jobs: List[Dict[str, Any]] = []
+    for item in data:
+        if len(jobs) >= limit:
+            break
+        if not isinstance(item, dict) or not item.get("position"):
+            continue  # first element is the API's legal notice
+        title = item.get("position") or ""
+        if not _matches_query(f"{title} {item.get('company', '')} {' '.join(item.get('tags') or [])}", terms):
+            continue
+        link = item.get("url") or ""
+        if not link:
+            continue
+        jobs.append({
+            "title": title,
+            "company": item.get("company") or "",
+            "description": _clean_html(item.get("description") or "")[:1500] or f"{title} (Remote OK listing).",
+            "link": link, "apply_url": link,
+            "location": item.get("location") or "",
+            "source": "remoteok",
+            "posted_at": parse_job_date(item.get("date")),
+        })
+    return jobs
+
+
+def fetch_remotive_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                        posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'Remotive': official public JSON API with server-side search."""
+    data = _get_json("https://remotive.com/api/remote-jobs",
+                     params={"search": search_query, "limit": max(limit * 2, 20)})
+    jobs: List[Dict[str, Any]] = []
+    for item in (data or {}).get("jobs", [])[: limit * 2]:
+        if len(jobs) >= limit:
+            break
+        title = item.get("title") or ""
+        job_id = item.get("id")
+        apply_url = item.get("url") or ""
+        link = f"https://remotive.com/remote-jobs/{job_id}" if job_id else apply_url
+        if not title or not (link or apply_url):
+            continue
+        jobs.append({
+            "title": title,
+            "company": item.get("company_name") or "",
+            "description": _clean_html(item.get("description") or "")[:1500],
+            "link": link or apply_url, "apply_url": apply_url or link,
+            "location": item.get("candidate_required_location") or "",
+            "source": "remotive",
+            "posted_at": parse_job_date(item.get("publication_date")),
+        })
+    return jobs
+
+
+def fetch_himalayas_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                         posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'Himalayas': official free public JSON API (himalayas.app/jobs/api/search)."""
+    data = _get_json("https://himalayas.app/jobs/api/search",
+                     params={"q": search_query, "limit": min(max(limit, 10), 20), "sort": "recent"})
+    jobs: List[Dict[str, Any]] = []
+    for item in (data or {}).get("jobs", []):
+        if len(jobs) >= limit:
+            break
+        raw_loc = item.get("locationRestrictions") or []
+        location = ", ".join(
+            (l.get("name", "") if isinstance(l, dict) else str(l)) for l in raw_loc
+        )
+        posted = item.get("pubDate")
+        if isinstance(posted, (int, float)):
+            posted = datetime.fromtimestamp(posted / 1000 if posted > 10_000_000_000 else posted,
+                                            tz=timezone.utc)
+        link = item.get("guid") or item.get("applicationLink") or ""
+        if not link:
+            continue
+        jobs.append({
+            "title": item.get("title") or "",
+            "company": item.get("companyName") or "",
+            "description": _clean_html(item.get("description") or item.get("excerpt") or "")[:1500],
+            "link": link, "apply_url": item.get("applicationLink") or link,
+            "location": location,
+            "source": "himalayas",
+            "posted_at": posted,
+        })
+    return jobs
+
+
+def fetch_wwr_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                   posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'We Work Remotely': official RSS feed for the programming category."""
+    xml = _get_text("https://weworkremotely.com/categories/remote-programming-jobs.rss")
+    if not xml:
+        return []
+    terms = _query_terms(search_query)
+    jobs: List[Dict[str, Any]] = []
+    for item in _parse_rss_items(xml):
+        if len(jobs) >= limit:
+            break
+        if not _matches_query(f"{item['title']} {item['description']}", terms):
+            continue
+        raw_title = item["title"].strip()
+        wwr_company = ""
+        # WWR RSS titles are 'Company: Role' — split on the first colon when
+        # there is no ' at ' separator for the shared helper to find.
+        if ":" in raw_title and " at " not in raw_title.lower():
+            wwr_company, _, rest = raw_title.partition(":")
+            wwr_company, raw_title = wwr_company.strip(), rest.strip()
+        title, company, location = _split_title_company(raw_title)
+        company = company or wwr_company
+        jobs.append({
+            "title": title, "company": company,
+            "description": _clean_html(item["description"])[:1500],
+            "link": item["link"], "apply_url": item["link"],
+            "location": location,
+            "source": "wwr",
+            "posted_at": parse_job_date(item["pubDate"]),
+        })
+    return jobs
+
+
+def fetch_builtin_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                       posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'Built In': server-rendered search page; parse job cards (href=/job/{slug}/{id}).
+    Detects Cloudflare interstitials and backs off instead of refetching every query."""
+    key = "builtin"
+    if _recently_empty(key):
+        return []
+    page = _get_text("https://builtin.com/jobs/search", params={"keywords": search_query})
+    if not page or "/job/" not in page:
+        _mark_empty(key)  # challenge page or no cards — back off for this run
+        return []
+    terms = _query_terms(search_query)
+    jobs: List[Dict[str, Any]] = []
+    if BeautifulSoup is None:
+        return []
+    soup = BeautifulSoup(page, "html.parser")
+    for anchor in soup.find_all("a", href=re.compile(r"^/job/")):
+        if len(jobs) >= limit:
+            break
+        href = anchor.get("href") or ""
+        title = anchor.get_text(" ", strip=True)
+        if not title or "/jobs/search" in href:
+            continue
+        card = anchor.find_parent(class_=re.compile(r"node|card|views|result|listing", re.I))
+        card_text = card.get_text(" ", strip=True) if card else ""
+        if not _matches_query(f"{title} {card_text}", terms):
+            continue
+        link = f"https://builtin.com{href}"
+        jobs.append({
+            "title": title,
+            "company": "",  # company lives in the card markup; enrichment loads it from the link
+            "description": (card_text or title)[:1500],
+            "link": link, "apply_url": link,
+            "location": (_india_place_from_text(card_text) or "").title(),
+            "source": "builtin",
+            "posted_at": None,
+        })
     if not jobs:
+        _mark_empty(key)
+    return jobs
+
+
+def fetch_wttj_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                    posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'Welcome to the Jungle': only the search shell is server-rendered (results
+    arrive client-side) and bots get a challenge page — verified both ways. Attempt with
+    browser-grade headers, parse job links/JSON-LD when present, else [].
+    shortcut: results are client-rendered; upgrade to their official Jobs API when
+    partner access exists."""
+    key = "wttj"
+    if _recently_empty(key):
+        return []
+    page = _get_text("https://www.welcometothejungle.com/en/jobs",
+                     params={"query": search_query}, headers=_BROWSER_HEADERS)
+    if not page:
+        _mark_empty(key)
+        return []
+    jobs: List[Dict[str, Any]] = []
+    # Structured JSON-LD first (works when the edge serves real results).
+    for raw in re.findall(r'<script[^>]*type=["\']?application/ld\+json["\']?[^>]*>(.*?)</script>', page, re.S):
         try:
-            slug = urllib.parse.quote(search_query.lower().replace(" ", "-"))
-            urls_to_try = [
-                "https://internshala.com/internships/artificial-intelligence-ai-internship/",
-                "https://internshala.com/internships/machine-learning-internship/",
-                "https://internshala.com/jobs/artificial-intelligence-ai-jobs/",
-                "https://internshala.com/jobs/machine-learning-jobs/",
-                f"https://internshala.com/internships/keywords-{slug}/",
-                f"https://internshala.com/jobs/keywords-{slug}/",
-            ]
-
-            ai_title_keywords = [
-                "ai", "ml", "machine learning", "deep learning", "data science",
-                "data analyst", "python", "nlp", "llm", "artificial intelligence",
-                "computer vision", "automation", "software", "developer", "engineer"
-            ]
-
-            seen_links = set()
-            for try_url in urls_to_try:
-                if len(jobs) >= limit:
-                    break
-                try:
-                    resp = requests.get(try_url, headers=HEADERS, timeout=12)
-                    if resp.status_code != 200:
-                        continue
-                    soup = BeautifulSoup(resp.text, "html.parser")
-                    cards = soup.find_all("div", class_=re.compile(r"individual_internship|job-card"))
-
-                    for card in cards:
-                        link_el = card.find("a", href=re.compile(r"/(?:internship|job)/detail/"))
-                        if not link_el:
-                            continue
-                        title = link_el.get_text(strip=True)
-                        href = link_el.get("href", "")
-                        if not href:
-                            continue
-                        if not href.startswith("http"):
-                            href = f"https://internshala.com{href}"
-                        if href in seen_links:
-                            continue
-                        seen_links.add(href)
-
-                        title_lower = title.lower()
-                        if not any(kw in title_lower for kw in ai_title_keywords):
-                            continue
-
-                        comp_el = card.find(class_=re.compile(r"company_name|link_display_like_text"))
-                        comp_raw = comp_el.get_text(strip=True) if comp_el else "Company on Internshala"
-                        comp = re.sub(r"actively hiring", "", comp_raw, flags=re.I).strip()
-
-                        loc_el = card.find(id=re.compile(r"location")) or card.find(class_=re.compile(r"location"))
-                        loc = loc_el.get_text(strip=True) if loc_el else ""
-
-                        status_el = card.find(class_=re.compile(r"status|posted|published"))
-                        date_text = status_el.get_text(strip=True) if status_el else None
-                        if not date_text:
-                            date_match = re.search(
-                                r"(\d+\s+(?:days?|hours?|weeks?|months?)\s+ago|just now|few hours ago|today)",
-                                card.get_text(), re.IGNORECASE
-                            )
-                            if date_match:
-                                date_text = date_match.group(1)
-                        posted_dt = parse_job_date(date_text)
-
-                        cutoff = _NOW() - timedelta(hours=posted_within_hours)
-                        if posted_dt and posted_dt < cutoff:
-                            continue
-
-                        job_obj = {
-                            "title": title,
-                            "company": comp,
-                            "description": f"{title} position at {comp}. Location: {loc}. Listed on Internshala India.",
-                            "link": href,
-                            "apply_url": href,
-                            "location": loc,
-                            "source": "internshala",
-                            "posted_at": posted_dt,
-                        }
-                        if is_located_in_india(job_obj):
-                            jobs.append(job_obj)
-                            if len(jobs) >= limit:
-                                break
-                except Exception as e:
-                    logger.debug(f"Internshala URL error ({try_url}): {e}")
-
-        except Exception as e:
-            logger.warning(f"Internshala scraper error: {e}")
-
+            data = json.loads(raw)
+        except ValueError:
+            continue
+        blocks = data if isinstance(data, list) else [data]
+        for block in blocks:
+            if not isinstance(block, dict) or block.get("@type") != "JobPosting":
+                continue
+            link = block.get("url") or ""
+            if not link:
+                continue
+            org = block.get("hiringOrganization") or {}
+            loc = block.get("jobLocation") or {}
+            if isinstance(loc, dict):
+                addr = loc.get("address") or {}
+                location = ", ".join(str(addr.get(k, "")) for k in ("addressLocality", "addressCountry") if addr.get(k))
+            else:
+                location = str(loc)
+            jobs.append({
+                "title": block.get("title") or "",
+                "company": org.get("name") if isinstance(org, dict) else str(org),
+                "description": _clean_html(block.get("description") or "")[:1500],
+                "link": link, "apply_url": link, "location": location,
+                "source": "wttj",
+                "posted_at": parse_job_date(block.get("datePosted")),
+            })
+            if len(jobs) >= limit:
+                break
+    if not jobs and "/job" not in page:
+        _mark_empty(key)  # shell/challenge only — don't refetch per query
     return jobs[:limit]
 
 
-# ---------------------------------------------------------------------------
-# 4. Greenhouse.io Boards API (Tech Startups with India Presence)
-# ---------------------------------------------------------------------------
+def fetch_underdog_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                        posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'Underdog.io': public search endpoint their landing page itself calls
+    (jobs-api.underdog.io/api/jobs/search, GET)."""
+    data = _get_json("https://jobs-api.underdog.io/api/jobs/search",
+                     params={"q": search_query})
+    jobs: List[Dict[str, Any]] = []
+    for item in (data or {}).get("objJobs", []):
+        if len(jobs) >= limit:
+            break
+        title = item.get("title") or ""
+        cities = item.get("objCities") or []
+        location = ", ".join((c.get("name", "") if isinstance(c, dict) else str(c)) for c in cities)
+        slug = item.get("webflow_slug") or item.get("slug") or ""
+        if not title or not slug:
+            continue
+        link = f"https://underdog.io/jobs/{slug}"
+        jobs.append({
+            "title": title,
+            "company": "",  # their search API omits company; the detail page has it
+            "description": _clean_html(item.get("description") or "")[:1500],
+            "link": link, "apply_url": link, "location": location,
+            "source": "underdog",
+            "posted_at": parse_job_date(item.get("created_at")),
+        })
+    return jobs
+
+
+_NODESK_SITEMAP_CACHE: List[str] = []
+_NODESK_DETAIL_CACHE: Dict[str, Optional[Dict[str, Any]]] = {}
+
+
+def _parse_jsonld_job(text: str) -> Optional[Dict[str, Any]]:
+    """First JobPosting JSON-LD block in a page (NoDesk emits unquoted script attrs)."""
+    for raw in re.findall(r"<script[^>]*application/ld\+json[^>]*>(.*?)</script>", text or "", re.S):
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            continue
+        for block in (data if isinstance(data, list) else [data]):
+            if isinstance(block, dict) and block.get("@type") == "JobPosting":
+                return block
+    return None
+
+
+def fetch_nodesk_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                      posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'NoDesk': job detail pages are listed in sitemap-jobs.xml and expose standard
+    JobPosting JSON-LD. Sitemap + parsed details are cached per process (they are heavy)."""
+    global _NODESK_SITEMAP_CACHE
+    if not _NODESK_SITEMAP_CACHE:
+        sm = _get_text("https://nodesk.co/sitemap-jobs.xml")
+        # shortcut: sitemap order is not guaranteed newest-first; upgrade to the site's
+        # internal search API if/when one appears.
+        _NODESK_SITEMAP_CACHE = re.findall(r"<loc>([^<]+)</loc>", sm or "")[:24]
+    terms = _query_terms(search_query)
+    jobs: List[Dict[str, Any]] = []
+    for url in _NODESK_SITEMAP_CACHE:
+        if len(jobs) >= limit:
+            break
+        block = _NODESK_DETAIL_CACHE.get(url)
+        if block is None and url not in _NODESK_DETAIL_CACHE:
+            page = _get_text(url)
+            block = _parse_jsonld_job(page or "")
+            _NODESK_DETAIL_CACHE[url] = block or False  # False = parsed, empty
+        if not block:
+            continue
+        title = block.get("title") or ""
+        desc = _clean_html(block.get("description") or "")[:1500]
+        if not _matches_query(f"{title} {desc}", terms):
+            continue
+        org = block.get("hiringOrganization") or {}
+        loc = block.get("jobLocation") or {}
+        if isinstance(loc, dict):
+            addr = loc.get("address") or {}
+            location = ", ".join(str(addr.get(k, "")) for k in ("addressLocality", "streetAddress", "addressCountry")
+                                 if isinstance(addr, dict) and addr.get(k))
+        else:
+            location = str(loc)
+        link = block.get("url") or url
+        jobs.append({
+            "title": title,
+            "company": org.get("name") if isinstance(org, dict) else str(org or ""),
+            "description": desc,
+            "link": link, "apply_url": link, "location": location,
+            "source": "nodesk",
+            "posted_at": parse_job_date(block.get("datePosted")),
+        })
+    return jobs
+
+
+_RRS_CATEGORIES = ["software-engineer", "data-analyst"]
+_RRS_CATEGORY_CACHE: Dict[str, List[Dict[str, Any]]] = {}
+
+
+def fetch_remoterocketship_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                                posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'Remote Rocketship': their job API needs an account key (401 verified), but the
+    site itself server-renders category pages with the full job array in __NEXT_DATA__
+    (props.pageProps.initialJobOpenings) — parse that instead of hammering the keyed API."""
+    terms = _query_terms(search_query)
+    categories = list(_RRS_CATEGORIES)
+    if any(t in terms for t in ("data", "analyst", "science", "analytics")) and "data-analyst" in categories:
+        categories.remove("data-analyst")
+        categories.insert(0, "data-analyst")
+    jobs: List[Dict[str, Any]] = []
+    for cat in categories:
+        if len(jobs) >= limit:
+            break
+        if cat not in _RRS_CATEGORY_CACHE:
+            page = _get_text(f"https://www.remoterocketship.com/jobs/{cat}/")
+            openings: List[Dict[str, Any]] = []
+            m = re.search(r'id="__NEXT_DATA__"[^>]*>(.*?)</script>', page or "", re.S)
+            if m:
+                try:
+                    data = json.loads(m.group(1))
+                    openings = data["props"]["pageProps"].get("initialJobOpenings") or []
+                except (KeyError, TypeError, ValueError):
+                    openings = []
+            _RRS_CATEGORY_CACHE[cat] = openings
+        for item in _RRS_CATEGORY_CACHE[cat]:
+            if len(jobs) >= limit:
+                break
+            title = item.get("roleTitle") or ""
+            summary = item.get("jobDescriptionSummary") or ""
+            if not _matches_query(f"{title} {summary} {' '.join(item.get('techStack') or [])}", terms):
+                continue
+            link = item.get("url") or f"https://www.remoterocketship.com/job/{item.get('slug', '')}/"
+            location = item.get("location") or item.get("locationCity") or ""
+            company = item.get("company") or ""
+            if isinstance(company, dict):  # API nests the company object
+                company = company.get("name") or ""
+            jobs.append({
+                "title": title,
+                "company": company,
+                "description": _clean_html(summary)[:1500],
+                "link": link, "apply_url": link,
+                "location": location if isinstance(location, str) else ", ".join(location or []),
+                "source": "remoterocketship",
+                "posted_at": parse_job_date(item.get("created_at")),
+            })
+    return jobs
+
+
+def fetch_interndoor_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                          posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'InternDoor': official JSON Feed (interndoor.com/feed.json, 50 recent India
+    internship/entry-level postings)."""
+    data = _get_json("https://interndoor.com/feed.json")
+    terms = _query_terms(search_query)
+    jobs: List[Dict[str, Any]] = []
+    for item in (data or {}).get("items", []):
+        if len(jobs) >= limit:
+            break
+        title = item.get("title") or ""
+        content = item.get("content_text") or ""
+        if not _matches_query(f"{title} {content}", terms):
+            continue
+        link = item.get("url") or ""
+        authors = item.get("authors") or []
+        company = ""
+        if authors and isinstance(authors[0], dict):
+            company = authors[0].get("name") or ""
+        if not link:
+            continue
+        jobs.append({
+            "title": title, "company": company,
+            "description": content[:1500],
+            "link": link, "apply_url": link,
+            # Content is platform-authored listing text; extract a named Indian
+            # place as location evidence rather than assuming the whole board
+            # is India (the audit removed source-name bypasses for this reason).
+            "location": (_india_place_from_text(content) or "").title(),
+            "source": "interndoor",
+            "posted_at": parse_job_date(item.get("date_published")),
+        })
+    return jobs
+
+
+def fetch_jobsii_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                      posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'Jobsii': WordPress REST API for its 'job' custom post type (search param,
+    company/location/apply URL in ACF fields) — India AI/ML internships."""
+    data = _get_json("https://jobsii.com/wp-json/wp/v2/job",
+                     params={"per_page": max(limit * 2, 10), "search": search_query},
+                     headers={**JSON_HEADERS})
+    jobs: List[Dict[str, Any]] = []
+    for item in (data if isinstance(data, list) else []):
+        if len(jobs) >= limit:
+            break
+        title = _clean_html((item.get("title") or {}).get("rendered", ""))[:200]
+        acf = item.get("acf") or {}
+        link = item.get("link") or ""
+        if not title or not link:
+            continue
+        desc = _clean_html((item.get("content") or {}).get("rendered", ""))[:1500]
+        jobs.append({
+            "title": title,
+            "company": acf.get("company_name") or "",
+            "description": desc,
+            "link": link,
+            "apply_url": acf.get("job_url") or link,
+            "location": acf.get("location") or "",
+            "source": "jobsii",
+            "posted_at": parse_job_date(item.get("date")),
+        })
+    return jobs
+
+
+# ── Direct-ATS boards: curated fast path + per-board helpers (discovery reuses these) ──
 
 GREENHOUSE_COMPANIES = [
     "posthog", "browserstack", "hasura", "razorpay", "cred",
@@ -745,369 +1414,324 @@ GREENHOUSE_COMPANIES = [
     "vercel", "supabase", "weaviate", "pinecone", "qdrant"
 ]
 
+LEVER_BOARDS = {
+    "spotify": "Spotify", "palantir": "Palantir", "cloudinary": "Cloudinary",
+    "jumpcloud": "JumpCloud", "wealthfront": "Wealthfront", "zoox": "Zoox",
+    "veeva": "Veeva", "outreach": "Outreach", "protolabs": "Protolabs",
+    "angellist": "AngelList", "greenlight": "Greenlight", "logrocket": "LogRocket",
+    "secureframe": "Secureframe", "neon": "Neon", "loadsmart": "LoadSmart",
+    "dlocal": "dLocal", "fundrise": "Fundrise", "extremenetworks": "Extreme Networks",
+    "entrata": "Entrata",
+}  # shortcut: curated US boards; the long tail comes from row-26 directory discovery
+
+ASHBY_BOARDS = {"ramp": "Ramp", "openai": "OpenAI", "notion": "Notion", "vercel": "Vercel"}
+
+_BOARD_CACHE: Dict[str, Any] = {}
+
+
+def _cached_board(url: str) -> Any:
+    """Per-process cache so repeated queries/windows don't refetch the same board."""
+    hit = _BOARD_CACHE.get(url)
+    if hit and (time.monotonic() - hit[0]) < 600:
+        return hit[1]
+    data = _get_json(url)
+    _BOARD_CACHE[url] = (time.monotonic(), data)
+    return data
+
+
+def _fetch_greenhouse_board(slug: str, terms: List[str], limit: int,
+                            cutoff: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    """One Greenhouse board (boards-api.greenhouse.io) -> normalized jobs."""
+    if limit <= 0:
+        return []
+    data = _cached_board(f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true")
+    jobs: List[Dict[str, Any]] = []
+    ai_signals = ["ai", "ml", "machine learning", "nlp", "llm", "deep learning",
+                  "data scientist", "research", "model", "python", "automation"]
+    for item in (data or {}).get("jobs", []):
+        if len(jobs) >= limit:
+            break
+        title = item.get("title", "")
+        desc = _clean_html(item.get("content", "") or "")[:1500]
+        combined = f"{title.lower()} {desc[:300].lower()}"
+        if terms and not any(t in combined for t in terms) and not any(k in combined for k in ai_signals):
+            continue
+        location = (item.get("location") or {}).get("name", "") or ""
+        if not is_located_in_india({"location": location, "description": desc, "title": title,
+                                    "source": "greenhouse"}):
+            continue
+        posted = parse_job_date(item.get("updated_at") or item.get("created_at") or "")
+        if cutoff and posted and posted < cutoff:
+            continue
+        link = item.get("absolute_url") or ""
+        if not link:
+            continue
+        jobs.append({
+            "title": title,
+            "company": slug.replace("-", " ").title(),
+            "description": desc or f"{title} position at {slug}.",
+            "link": link, "apply_url": link, "location": location,
+            "source": "greenhouse", "posted_at": posted,
+        })
+    return jobs
+
+
+def _fetch_lever_board(slug: str, terms: List[str], limit: int,
+                       cutoff: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    """One Lever board (api.lever.co postings API) -> normalized jobs."""
+    if limit <= 0:
+        return []
+    postings = _cached_board(f"https://api.lever.co/v0/postings/{slug}?mode=json")
+    if not isinstance(postings, list):
+        return []
+    jobs: List[Dict[str, Any]] = []
+    for item in postings:
+        if len(jobs) >= limit:
+            break
+        title = item.get("text") or ""
+        desc = _clean_html(item.get("description") or "")[:1500]
+        cats = item.get("categories") or {}
+        location = cats.get("location") or ""
+        if not _matches_query(f"{title} {desc} {location}", terms):
+            continue
+        created_ms = item.get("createdAt")
+        posted = (datetime.fromtimestamp(created_ms / 1000, tz=timezone.utc)
+                  if isinstance(created_ms, (int, float)) else None)
+        if cutoff and posted and posted < cutoff:
+            continue
+        link = item.get("hostedUrl") or item.get("applyUrl") or ""
+        if not link:
+            continue
+        jobs.append({
+            "title": title,
+            "company": slug.replace("-", " ").title(),
+            "description": desc or f"{title} ({location})",
+            "link": link, "apply_url": item.get("applyUrl") or link, "location": location,
+            "source": "lever", "posted_at": posted,
+        })
+    return jobs
+
+
+def _fetch_ashby_board(slug: str, terms: List[str], limit: int,
+                       cutoff: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    """One Ashby board (posting-api.ashbyhq.com) -> normalized jobs."""
+    if limit <= 0:
+        return []
+    data = _cached_board(f"https://api.ashbyhq.com/posting-api/job-board/{slug}")
+    jobs: List[Dict[str, Any]] = []
+    for item in (data or {}).get("jobs", []):
+        if len(jobs) >= limit:
+            break
+        title = item.get("title") or ""
+        desc = _clean_html(item.get("description") or item.get("descriptionPlain") or "")[:1500]
+        location = item.get("location") or ""
+        if not _matches_query(f"{title} {desc} {location}", terms):
+            continue
+        posted = parse_job_date(item.get("publishedAt") or item.get("publishedAtIso"))
+        if cutoff and posted and posted < cutoff:
+            continue
+        link = item.get("jobUrl") or item.get("applyUrl") or ""
+        if not link:
+            continue
+        jobs.append({
+            "title": title,
+            "company": slug.replace("-", " ").title(),
+            "description": desc or f"{title} ({location})",
+            "link": link, "apply_url": item.get("applyUrl") or link, "location": location,
+            "source": "ashby", "posted_at": posted,
+        })
+    return jobs
+
 
 def fetch_greenhouse_jobs(search_query: str = "AI Engineer", limit: int = 10,
                           posted_within_hours: int = 168) -> List[Dict[str, Any]]:
-    """
-    Queries public Greenhouse.io job board API and strictly filters for India positions.
-    """
-    if requests is None:
-        return []
-
-    jobs: List[Dict[str, Any]] = []
-    q_terms = [t.strip().lower() for t in search_query.split() if t.strip()]
-    ai_signals = ["ai", "ml", "machine learning", "nlp", "llm", "deep learning",
-                  "data scientist", "research", "model", "python", "automation"]
-
+    """CSV 'Greenhouse Career Pages': curated public boards (India + AI-heavy companies),
+    in the order listed in GREENHOUSE_COMPANIES."""
+    terms = _query_terms(search_query)
     cutoff = _NOW() - timedelta(hours=posted_within_hours)
-
-    for company_slug in GREENHOUSE_COMPANIES:
+    jobs: List[Dict[str, Any]] = []
+    for slug in GREENHOUSE_COMPANIES:
         if len(jobs) >= limit:
             break
-        try:
-            url = f"https://boards-api.greenhouse.io/v1/boards/{company_slug}/jobs?content=true"
-            resp = requests.get(url, headers=JSON_HEADERS, timeout=10)
-            if resp.status_code != 200:
-                continue
-            data = resp.json()
-            job_list = data.get("jobs", [])
-            for item in job_list:
-                if len(jobs) >= limit:
-                    break
-                title = item.get("title", "")
-                title_lower = title.lower()
-                desc_raw = item.get("content", "") or ""
-                desc = _clean_html(desc_raw)[:1500]
-                combined_ai = f"{title_lower} {desc[:300].lower()}"
-
-                if q_terms and not any(t in combined_ai for t in q_terms):
-                    if not any(k in combined_ai for k in ai_signals):
-                        continue
-
-                location = item.get("location", {}).get("name", "") or ""
-                job_obj_temp = {
-                    "location": location,
-                    "description": desc,
-                    "title": title,
-                    "source": "greenhouse"
-                }
-
-                # Strict India location guardrail
-                if not is_located_in_india(job_obj_temp):
-                    continue
-
-                posted_raw = item.get("updated_at") or item.get("created_at") or ""
-                posted_dt = _parse_iso(posted_raw) if posted_raw else _NOW()
-                if posted_dt and posted_dt < cutoff:
-                    continue
-
-                link = item.get("absolute_url") or ""
-                if not link:
-                    continue
-
-                jobs.append({
-                    "title": title,
-                    "company": company_slug.replace("-", " ").title(),
-                    "description": desc if desc else f"{title} position at {company_slug}.",
-                    "link": link,
-                    "apply_url": link,
-                    "location": location,  # store what the board reported; may be empty
-                    "source": "greenhouse",
-                    "posted_at": posted_dt,
-                })
-        except Exception as e:
-            logger.debug(f"Greenhouse error for {company_slug}: {e}")
-            continue
-
+        jobs.extend(_fetch_greenhouse_board(slug, terms, limit - len(jobs), cutoff))
     return jobs[:limit]
 
 
-# ---------------------------------------------------------------------------
-# 5. SimplifyJobs GitHub Tracker (Filtered for India)
-# ---------------------------------------------------------------------------
-def fetch_simplifyjobs_github(search_query: str = "AI Engineer", limit: int = 10,
-                               posted_within_hours: int = 168) -> List[Dict[str, Any]]:
-    """Parses SimplifyJobs GitHub Markdown table and filters strictly for India."""
-    if requests is None or BeautifulSoup is None:
-        return []
-
-    jobs: List[Dict[str, Any]] = []
-    try:
-        url = "https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/dev/README.md"
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        if resp.status_code != 200:
-            url = "https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/main/README.md"
-            resp = requests.get(url, headers=HEADERS, timeout=15)
-
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, "html.parser")
-            q_terms = [t.strip().lower() for t in search_query.split() if t.strip()]
-            last_company = ""
-
-            for tr in soup.find_all("tr"):
-                tds = tr.find_all("td")
-                if len(tds) < 3:
-                    continue
-
-                raw_comp = tds[0].get_text(strip=True)
-                if raw_comp:
-                    last_company = raw_comp
-                company = last_company or "Tech Company"
-
-                title = tds[1].get_text(strip=True)
-                location = tds[2].get_text(strip=True) if len(tds) > 2 else ""
-
-                href = ""
-                for a in tr.find_all("a", href=True):
-                    h = a["href"]
-                    if any(domain in h for domain in [
-                        "greenhouse.io", "lever.co", "myworkdayjobs.com",
-                        "simplify.jobs/p/", "jobs.ashbyhq.com", "boards.greenhouse.io"
-                    ]):
-                        href = h
-                        break
-                if not href:
-                    links = tr.find_all("a", href=True)
-                    if links:
-                        href = links[-1]["href"]
-
-                if not href or not href.startswith("http"):
-                    continue
-
-                combined = f"{title} {company}".lower()
-                is_ai_relevant = any(k in combined for k in [
-                    "ai", "ml", "machine learning", "deep learning", "nlp", "llm",
-                    "data", "engineer", "software", "developer", "research"
-                ])
-                if q_terms and not any(t in combined for t in q_terms) and not is_ai_relevant:
-                    continue
-
-                date_str = tds[4].get_text(strip=True) if len(tds) > 4 else ""
-                posted_dt = parse_job_date(date_str)
-                cutoff = _NOW() - timedelta(hours=posted_within_hours)
-                if posted_dt and posted_dt < cutoff:
-                    continue
-
-                job_obj = {
-                    "title": title if title else f"Position at {company}",
-                    "company": company,
-                    "description": f"{title} at {company}. Location: {location}.",
-                    "link": href,
-                    "apply_url": href,
-                    "location": location,
-                    "source": "simplifyjobs",
-                    "posted_at": posted_dt,
-                }
-                if is_located_in_india(job_obj):
-                    jobs.append(job_obj)
-                    if len(jobs) >= limit:
-                        break
-
-    except Exception as e:
-        logger.warning(f"Error fetching SimplifyJobs GitHub: {e}")
-
-    return jobs[:limit]
-
-
-# ---------------------------------------------------------------------------
-# 6. Pittcsc Summer Internships (Filtered for India)
-# ---------------------------------------------------------------------------
-def fetch_pittcsc_github(search_query: str = "AI Engineer", limit: int = 10,
-                         posted_within_hours: int = 168) -> List[Dict[str, Any]]:
-    """Parses pittcsc GitHub Markdown table and filters strictly for India."""
-    if requests is None or BeautifulSoup is None:
-        return []
-
-    jobs: List[Dict[str, Any]] = []
-    try:
-        url = "https://raw.githubusercontent.com/pittcsc/Summer2026-Internships/dev/README.md"
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        if resp.status_code != 200:
-            url = "https://raw.githubusercontent.com/pittcsc/Summer2026-Internships/main/README.md"
-            resp = requests.get(url, headers=HEADERS, timeout=15)
-
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, "html.parser")
-            q_terms = [t.strip().lower() for t in search_query.split() if t.strip()]
-            last_company = ""
-
-            for tr in soup.find_all("tr"):
-                tds = tr.find_all("td")
-                if len(tds) < 3:
-                    continue
-
-                raw_comp = tds[0].get_text(strip=True)
-                if raw_comp and raw_comp not in ("↳", ""):
-                    last_company = raw_comp
-                company = last_company or "Tech Company"
-
-                title = tds[1].get_text(strip=True) if len(tds) > 1 else "Software Engineer"
-                location = tds[2].get_text(strip=True) if len(tds) > 2 else ""
-                date_str = tds[4].get_text(strip=True) if len(tds) > 4 else ""
-                posted_dt = parse_job_date(date_str)
-                cutoff = _NOW() - timedelta(hours=posted_within_hours)
-                if posted_dt and posted_dt < cutoff:
-                    continue
-
-                href = ""
-                for a in tr.find_all("a", href=True):
-                    h = a["href"]
-                    if h.startswith("http"):
-                        href = h
-                        break
-
-                if not href:
-                    continue
-
-                combined = f"{title} {company}".lower()
-                is_ai_relevant = any(k in combined for k in [
-                    "ai", "ml", "machine learning", "nlp", "llm", "data",
-                    "engineer", "software", "research", "algorithm"
-                ])
-                if q_terms and not any(t in combined for t in q_terms) and not is_ai_relevant:
-                    continue
-
-                job_obj = {
-                    "title": title,
-                    "company": company,
-                    "description": f"{title} at {company}. Location: {location}.",
-                    "link": href,
-                    "apply_url": href,
-                    "location": location,
-                    "source": "pittcsc",
-                    "posted_at": posted_dt,
-                }
-                if is_located_in_india(job_obj):
-                    jobs.append(job_obj)
-                    if len(jobs) >= limit:
-                        break
-
-    except Exception as e:
-        logger.warning(f"Error fetching pittcsc GitHub: {e}")
-
-    return jobs[:limit]
-
-
-# ---------------------------------------------------------------------------
-# 7. Peerlist (Primary Platform — Indian Tech Founders & Builders)
-# ---------------------------------------------------------------------------
-def fetch_peerlist_jobs(search_query: str = "AI Engineer", limit: int = 10,
-                        posted_within_hours: int = 168) -> List[Dict[str, Any]]:
-    """
-    Fetches live tech roles from Peerlist public API (peerlist.io/api/v1/jobs)
-    strictly filtered for India and AI/ML domain.
-    """
-    if requests is None:
-        return []
-
-    jobs: List[Dict[str, Any]] = []
-    seen_links = set()
+def fetch_lever_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                     posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'Lever Career Pages': curated public Lever boards via the postings API."""
+    terms = _query_terms(search_query)
     cutoff = _NOW() - timedelta(hours=posted_within_hours)
-
-    try:
-        url = "https://peerlist.io/api/v1/jobs"
-        resp = requests.get(url, headers=JSON_HEADERS, timeout=12)
-        if resp.status_code == 200:
-            data = resp.json().get("data", {})
-            raw_jobs = data.get("jobs", []) if isinstance(data, dict) else []
-
-            q_terms = [t.strip().lower() for t in search_query.split() if t.strip()]
-            ai_keywords = [
-                "ai", "ml", "machine learning", "deep learning", "nlp", "llm",
-                "data", "engineer", "software", "developer", "research", "fullstack", "backend"
-            ]
-
-            for item in raw_jobs:
-                if len(jobs) >= limit:
-                    break
-                if not isinstance(item, dict):
-                    continue
-
-                title = item.get("jobTitle") or ""
-                company_dict = item.get("company", {})
-                company = company_dict.get("name") if isinstance(company_dict, dict) else "Tech Startup"
-                desc = _clean_html(item.get("jobDescription") or f"{title} at {company}")
-
-                # Check relevance
-                combined = f"{title} {desc[:300]}".lower()
-                if q_terms and not any(t in combined for t in q_terms):
-                    if not any(k in combined for k in ai_keywords):
-                        continue
-
-                # Location extraction — unknown stays empty, never assumed India
-                loc_list = item.get("location", [])
-                loc_str = ""
-                if isinstance(loc_list, list) and loc_list:
-                    cities = [l.get("city", "") for l in loc_list if isinstance(l, dict) and l.get("city")]
-                    countries = [l.get("country", "") for l in loc_list if isinstance(l, dict) and l.get("country")]
-                    loc_parts = cities + countries
-                    loc_str = ", ".join(dict.fromkeys(loc_parts))
-
-                apply_url = item.get("applyLink") or ""
-                job_id = item.get("jobId") or ""
-                link = apply_url or (f"https://peerlist.io/jobs/{job_id}" if job_id else "")
-                if not link or link in seen_links:
-                    continue
-
-                published_raw = item.get("publishedAt")
-                posted_dt = parse_job_date(published_raw)
-                if posted_dt and posted_dt < cutoff:
-                    continue
-
-                job_obj = {
-                    "title": title,
-                    "company": company,
-                    "description": desc[:1500],
-                    "link": link,
-                    "apply_url": apply_url or link,
-                    "location": loc_str,
-                    "source": "peerlist",
-                    "posted_at": posted_dt,
-                }
-
-                if is_located_in_india(job_obj):
-                    seen_links.add(link)
-                    jobs.append(job_obj)
-    except Exception as e:
-        logger.warning(f"Error fetching Peerlist jobs: {e}")
-
+    jobs: List[Dict[str, Any]] = []
+    for slug in LEVER_BOARDS:
+        if len(jobs) >= limit:
+            break
+        jobs.extend(_fetch_lever_board(slug, terms, limit - len(jobs), cutoff))
     return jobs[:limit]
 
 
+def fetch_ashby_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                     posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'Ashby Job Boards': curated public Ashby boards via the posting API."""
+    terms = _query_terms(search_query)
+    cutoff = _NOW() - timedelta(hours=posted_within_hours)
+    jobs: List[Dict[str, Any]] = []
+    for slug in ASHBY_BOARDS:
+        if len(jobs) >= limit:
+            break
+        jobs.extend(_fetch_ashby_board(slug, terms, limit - len(jobs), cutoff))
+    return jobs[:limit]
+
+
+def fetch_workable_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                        posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'Workable': official jobs.workable.com aggregator API (server-side query param
+    'query'; covers every Workable-hosted company board in one endpoint)."""
+    data = _get_json("https://jobs.workable.com/api/v1/jobs",
+                     params={"query": search_query},
+                     headers={**JSON_HEADERS})
+    jobs: List[Dict[str, Any]] = []
+    for item in (data or {}).get("jobs", []):
+        if len(jobs) >= limit:
+            break
+        title = item.get("title") or ""
+        company = (item.get("company") or {}).get("title") or ""
+        loc = item.get("location") or {}
+        location = ", ".join(p for p in (loc.get("city"), loc.get("countryName")) if p)
+        link = item.get("url") or ""
+        if not title or not link:
+            continue
+        jobs.append({
+            "title": title, "company": company,
+            "description": _clean_html(item.get("description") or "")[:1500],
+            "link": link, "apply_url": link, "location": location,
+            "source": "workable",
+            "posted_at": parse_job_date(item.get("created") or item.get("updated")),
+        })
+    return jobs[:limit]
+
+
+# ── Row 26: Direct Startup Career Pages (search-assisted board discovery) ──────
+
+BOARD_DIRECTORY_BASE = "https://kalebconfer-sys.github.io/job-board-directory"
+_DISCOVERY_SOURCES = {
+    "greenhouse": ("greenhouse.csv", _fetch_greenhouse_board),
+    "lever": ("lever.csv", _fetch_lever_board),
+    "ashby": ("ashby.csv", _fetch_ashby_board),
+}
+_DIRECTORY_CACHE: Dict[str, List[tuple]] = {}
+_discovery_offset = {"i": 0}
+
+
+def _load_directory(platform: str) -> List[tuple]:
+    """[(token, company), ...] for one ATS from the free verified board directory."""
+    if platform not in _DIRECTORY_CACHE:
+        csv_file, _ = _DISCOVERY_SOURCES[platform]
+        text = _get_text(f"{BOARD_DIRECTORY_BASE}/{csv_file}")
+        rows: List[tuple] = []
+        for i, line in enumerate((text or "").splitlines()):
+            if i == 0 or not line.strip():
+                continue  # header: platform,token,company,board_url,api_url,...
+            parts = line.split(",")
+            if len(parts) >= 3 and parts[1].strip():
+                rows.append((parts[1].strip(), parts[2].strip()))
+        _DIRECTORY_CACHE[platform] = rows
+    return _DIRECTORY_CACHE[platform]
+
+
+def fetch_discovery_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                         posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """CSV 'Direct Startup Career Pages': Google scraping is bot-walled and its Custom
+    Search API needs a paid key (both verified), so the optimized method is the free
+    verified job-board directory (12k+ company career boards mapped to Greenhouse/Lever/
+    Ashby public APIs). Rotates its starting offset each call so coverage grows per run;
+    the pipeline's dedup drops overlaps with rows 22-24.
+    shortcut: directory is a third-party snapshot; refresh source if it disappears."""
+    terms = _query_terms(search_query)
+    cutoff = _NOW() - timedelta(hours=posted_within_hours)
+    jobs: List[Dict[str, Any]] = []
+    per_platform = max(3, limit // 2)
+    for platform, (_, fetcher) in _DISCOVERY_SOURCES.items():
+        if len(jobs) >= limit:
+            break
+        rows = _load_directory(platform)
+        if not rows:
+            continue
+        start = _discovery_offset["i"] % len(rows)
+        for step in range(per_platform):
+            if len(jobs) >= limit:
+                break
+            token, company = rows[(start + step) % len(rows)]
+            found = fetcher(token, terms, per_platform, cutoff)
+            for job in found:
+                if company:
+                    job["company"] = company  # directory carries the real company name
+                job["source"] = "discovery"  # re-tag: source dropdown/quota key is the CSV row
+                jobs.append(job)
+                if len(jobs) >= limit:
+                    break
+        _discovery_offset["i"] += per_platform
+    return jobs[:limit]
+
 # ---------------------------------------------------------------------------
-# Platform Registry & Quota Distribution (PRIMARY PORTALS ONLY)
-#   LinkedIn is strictly excluded here and reserved for the FALLBACK NODE.
-#   Total Primary Target = 25 qualified openings.
+# Platform Registry & Quota Distribution — mirrors internship_sources_autonomous_agent.csv
+#   get_scraper_platforms()  : CSV "Main" rows, fetched first, in CSV order.
+#   get_fallback_platforms() : CSV "Fallback"/"Fallback-Direct ATS"/"Fallback-Discovery"
+#                              rows, fetched in order only while still under target.
+#   LinkedIn additionally gets an uncapped deep-widen safety net in pipeline_core.
 # ---------------------------------------------------------------------------
 
 PLATFORM_QUOTAS = {
-    "internshala":   8,
-    "peerlist":      4,
-    "wellfound":     4,
-    "yc":            3,
-    "greenhouse":    3,
-    "simplifyjobs":  2,
-    "pittcsc":       1,
+    # CSV "Main"
+    "yc":               6,
+    "startupjobs":      4,
+    "wellfound":        6,
+    "cutshort":         4,
+    "linkedin":        10,
+    "instahyre":        6,
+    "hirist":           2,
+    "naukri":           2,
+    # CSV "Fallback"
+    "hn":               4,
+    "remoteok":         3,
+    "remotive":         3,
+    "himalayas":        3,
+    "wwr":              2,
+    "builtin":          2,
+    "wttj":             2,
+    "underdog":         2,
+    "nodesk":           2,
+    "remoterocketship": 2,
+    "interndoor":       6,
+    "jobsii":           6,
+    # CSV "Fallback / Direct ATS"
+    "greenhouse":       5,
+    "lever":            4,
+    "ashby":            4,
+    "workable":         3,
+    # CSV "Fallback / Discovery"
+    "discovery":        4,
 }
 
 
 def get_scraper_platforms() -> List[Dict[str, Any]]:
     """
-    Returns the ordered list of PRIMARY scrapers (non-LinkedIn).
-    LinkedIn is reserved exclusively for the Fallback Node.
+    Returns the ordered PRIMARY pass: the CSV "Main" portals.
+    Fallback portals live in get_fallback_platforms(); LinkedIn's uncapped
+    deep-widen safety net is driven directly by pipeline_core.
     """
     return [
         {
-            "name": "Internshala (India)",
-            "source": "internshala",
-            "quota": PLATFORM_QUOTAS["internshala"],
-            "fn": lambda q, lim, hrs, off: fetch_internshala_jobs(q, limit=lim, posted_within_hours=hrs)
+            "name": "Y Combinator (YC Jobs)",
+            "source": "yc",
+            "quota": PLATFORM_QUOTAS["yc"],
+            "fn": lambda q, lim, hrs, off: fetch_yc_jobs(q, limit=lim, posted_within_hours=hrs)
         },
         {
-            "name": "Peerlist (India Startups)",
-            "source": "peerlist",
-            "quota": PLATFORM_QUOTAS["peerlist"],
-            "fn": lambda q, lim, hrs, off: fetch_peerlist_jobs(q, limit=lim, posted_within_hours=hrs)
+            "name": "Startup Jobs (Official RSS)",
+            "source": "startupjobs",
+            "quota": PLATFORM_QUOTAS["startupjobs"],
+            "fn": lambda q, lim, hrs, off: fetch_startupjobs_jobs(q, limit=lim, posted_within_hours=hrs)
         },
         {
             "name": "Wellfound (AngelList)",
@@ -1116,28 +1740,148 @@ def get_scraper_platforms() -> List[Dict[str, Any]]:
             "fn": lambda q, lim, hrs, off: fetch_wellfound_jobs(q, limit=lim, posted_within_hours=hrs)
         },
         {
-            "name": "Y Combinator (Workatastartup & HN)",
-            "source": "yc",
-            "quota": PLATFORM_QUOTAS["yc"],
-            "fn": lambda q, lim, hrs, off: fetch_yc_jobs(q, limit=lim, posted_within_hours=hrs)
+            "name": "Cutshort (India Startups)",
+            "source": "cutshort",
+            "quota": PLATFORM_QUOTAS["cutshort"],
+            "fn": lambda q, lim, hrs, off: fetch_cutshort_jobs(q, limit=lim, posted_within_hours=hrs)
         },
         {
-            "name": "Greenhouse.io Boards (India)",
+            "name": "LinkedIn Jobs",
+            "source": "linkedin",
+            "quota": PLATFORM_QUOTAS["linkedin"],
+            "fn": lambda q, lim, hrs, off: fetch_linkedin_jobs(
+                search_query=q, location="India", limit=lim,
+                posted_within_hours=hrs, start_offset=off)
+        },
+        {
+            "name": "Instahyre (India)",
+            "source": "instahyre",
+            "quota": PLATFORM_QUOTAS["instahyre"],
+            "fn": lambda q, lim, hrs, off: fetch_instahyre_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "Hirist (India Tech)",
+            "source": "hirist",
+            "quota": PLATFORM_QUOTAS["hirist"],
+            "fn": lambda q, lim, hrs, off: fetch_hirist_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "Naukri (India)",
+            "source": "naukri",
+            "quota": PLATFORM_QUOTAS["naukri"],
+            "fn": lambda q, lim, hrs, off: fetch_naukri_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+    ]
+
+
+def get_fallback_platforms() -> List[Dict[str, Any]]:
+    """
+    Returns the ordered FALLBACK pass: the CSV "Fallback" portals — regular remote
+    boards first, then Direct ATS boards, then the discovery row — fetched only
+    while the run is still under its target of 25 qualified openings.
+    """
+    return [
+        {
+            "name": "Hacker News – Who is Hiring",
+            "source": "hn",
+            "quota": PLATFORM_QUOTAS["hn"],
+            "fn": lambda q, lim, hrs, off: fetch_hn_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "Remote OK",
+            "source": "remoteok",
+            "quota": PLATFORM_QUOTAS["remoteok"],
+            "fn": lambda q, lim, hrs, off: fetch_remoteok_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "Remotive",
+            "source": "remotive",
+            "quota": PLATFORM_QUOTAS["remotive"],
+            "fn": lambda q, lim, hrs, off: fetch_remotive_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "Himalayas",
+            "source": "himalayas",
+            "quota": PLATFORM_QUOTAS["himalayas"],
+            "fn": lambda q, lim, hrs, off: fetch_himalayas_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "We Work Remotely",
+            "source": "wwr",
+            "quota": PLATFORM_QUOTAS["wwr"],
+            "fn": lambda q, lim, hrs, off: fetch_wwr_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "Built In",
+            "source": "builtin",
+            "quota": PLATFORM_QUOTAS["builtin"],
+            "fn": lambda q, lim, hrs, off: fetch_builtin_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "Welcome to the Jungle",
+            "source": "wttj",
+            "quota": PLATFORM_QUOTAS["wttj"],
+            "fn": lambda q, lim, hrs, off: fetch_wttj_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "Underdog.io",
+            "source": "underdog",
+            "quota": PLATFORM_QUOTAS["underdog"],
+            "fn": lambda q, lim, hrs, off: fetch_underdog_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "NoDesk",
+            "source": "nodesk",
+            "quota": PLATFORM_QUOTAS["nodesk"],
+            "fn": lambda q, lim, hrs, off: fetch_nodesk_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "Remote Rocketship",
+            "source": "remoterocketship",
+            "quota": PLATFORM_QUOTAS["remoterocketship"],
+            "fn": lambda q, lim, hrs, off: fetch_remoterocketship_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "InternDoor (India)",
+            "source": "interndoor",
+            "quota": PLATFORM_QUOTAS["interndoor"],
+            "fn": lambda q, lim, hrs, off: fetch_interndoor_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "Jobsii (India AI/ML)",
+            "source": "jobsii",
+            "quota": PLATFORM_QUOTAS["jobsii"],
+            "fn": lambda q, lim, hrs, off: fetch_jobsii_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "Greenhouse Career Pages",
             "source": "greenhouse",
             "quota": PLATFORM_QUOTAS["greenhouse"],
             "fn": lambda q, lim, hrs, off: fetch_greenhouse_jobs(q, limit=lim, posted_within_hours=hrs)
         },
         {
-            "name": "SimplifyJobs Tracker (India)",
-            "source": "simplifyjobs",
-            "quota": PLATFORM_QUOTAS["simplifyjobs"],
-            "fn": lambda q, lim, hrs, off: fetch_simplifyjobs_github(q, limit=lim, posted_within_hours=hrs)
+            "name": "Lever Career Pages",
+            "source": "lever",
+            "quota": PLATFORM_QUOTAS["lever"],
+            "fn": lambda q, lim, hrs, off: fetch_lever_jobs(q, limit=lim, posted_within_hours=hrs)
         },
         {
-            "name": "Pittcsc Tracker (India)",
-            "source": "pittcsc",
-            "quota": PLATFORM_QUOTAS["pittcsc"],
-            "fn": lambda q, lim, hrs, off: fetch_pittcsc_github(q, limit=lim, posted_within_hours=hrs)
+            "name": "Ashby Job Boards",
+            "source": "ashby",
+            "quota": PLATFORM_QUOTAS["ashby"],
+            "fn": lambda q, lim, hrs, off: fetch_ashby_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "Workable",
+            "source": "workable",
+            "quota": PLATFORM_QUOTAS["workable"],
+            "fn": lambda q, lim, hrs, off: fetch_workable_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "Direct Startup Career Pages (Discovery)",
+            "source": "discovery",
+            "quota": PLATFORM_QUOTAS["discovery"],
+            "fn": lambda q, lim, hrs, off: fetch_discovery_jobs(q, limit=lim, posted_within_hours=hrs)
         },
     ]
 

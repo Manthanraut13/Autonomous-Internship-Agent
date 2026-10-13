@@ -9,9 +9,10 @@ Operational specification and honest project status.
 
 ## What this project is
 
-An automated pipeline that scrapes India-based AI/ML internship openings
-(Internshala, Peerlist, Wellfound, YC, Greenhouse, SimplifyJobs, Pitt CSC,
-with a LinkedIn India fallback), scores them against a candidate resume with
+An automated pipeline that scrapes AI/ML internship openings from the 25
+portals listed in `internship_sources_autonomous_agent.csv` (8 Main → 17
+Fallback, with an uncapped LinkedIn India deep-widen safety net), keeps only
+India-based listings, scores them against a candidate resume with
 a Groq LLM, and delivers matches via a React dashboard, CSV email, and
 WhatsApp summary.
 

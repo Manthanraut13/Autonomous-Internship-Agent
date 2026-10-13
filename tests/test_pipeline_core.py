@@ -99,7 +99,7 @@ def patched(monkeypatch, tmp_path):
         whatsapp_from="+1000", user_whatsapp_number="+2000", recipient_email="me@example.com"))
     monkeypatch.setattr(core.time, "sleep", lambda s: None)  # no 1.5s LLM rate-limit waits
 
-    def run_with(jobs, **kwargs):
+    def run_with(jobs, fallback_jobs=None, **kwargs):
         pending = {"jobs": list(jobs)}
 
         def primary_fn(query, limit, days, offset):
@@ -110,6 +110,19 @@ def patched(monkeypatch, tmp_path):
 
         platforms = [{"name": "FakeBoard", "source": "fakeboard", "fn": primary_fn, "quota": 10}]
         monkeypatch.setattr(core, "get_scraper_platforms", lambda: platforms)
+        if fallback_jobs is None:
+            monkeypatch.setattr(core, "get_fallback_platforms", lambda: [])
+        else:
+            pending_fb = {"jobs": list(fallback_jobs)}
+
+            def fallback_fn(query, limit, days, offset):
+                page = pending_fb["jobs"]
+                pending_fb["jobs"] = []
+                return page
+
+            monkeypatch.setattr(core, "get_fallback_platforms", lambda: [
+                {"name": "FakeFallback", "source": "fakefallback",
+                 "fn": fallback_fn, "quota": 5}])
         monkeypatch.setattr(core, "fetch_linkedin_jobs", lambda **kw: [])
         events = list(core.process_jobs(target_matches=5, threshold=70, **kwargs))
         return events, fake_db, csv_calls
@@ -266,3 +279,19 @@ def test_job_card_shape():
     assert card["match_score"] == 85
     assert card["work_mode"] == "remote"
     assert card["status"] == "saved"
+
+
+def test_csv_fallback_node_runs_when_under_target(patched):
+    # Main pass yields 1/5 -> Node 2 (CSV fallback) must be searched, and its
+    # jobs go through the same dedup/guardrail/date-gate/scoring stage.
+    events, fake_db, _ = patched(
+        [make_job("Acme", "https://j/good", GOOD_DESC)],
+        fallback_jobs=[make_job("FallbackCo", "https://j/fb", GOOD_DESC)],
+    )
+    assert events[-1]["data"]["status"] == "success"
+    assert any("Fallback Node Activated" in e["message"] for e in events)
+    assert any("FakeFallback" in e["message"] for e in events)
+    saved = {j.company for j in fake_db.added if isinstance(j, Job)}
+    assert saved == {"Acme", "FallbackCo"}
+    assert events[-1]["data"]["jobs_matched"] == 2
+    assert events[-1]["data"]["total_scraped"] == 2

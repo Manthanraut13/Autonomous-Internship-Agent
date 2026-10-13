@@ -77,9 +77,9 @@ The **Autonomous Internship Agent** is a full-stack, enterprise-grade AI automat
                                                          ▼
                                   ┌──────────────────────────────────────────────┐
                                   │     2. PRIORITY-ORDERED SCRAPER CASCADE      │
-                                  │  • Priority 1-7: India portals (Internshala,  │
-                                  │    Peerlist, Wellfound, YC, Greenhouse,      │
-                                  │    SimplifyJobs, Pitt CSC)                   │
+                                  │  • Pass 1 "Main": 8 India/startup portals     │
+                                  │  • Pass 2 "Fallback": 17 remote/ATS portals   │
+                                  │  • Pass 3: LinkedIn deep-widen safety net     │
                                   └──────────────────────┬───────────────────────┘
                                                          │
                                                          ▼
@@ -156,7 +156,7 @@ Autonomous-Internship-Agent/
 │   ├── email_sender.py             # Multi-tier email delivery (Gmail SMTP & OAuth 2.0)
 │   ├── jd_fetcher.py               # Full job description text enricher
 │   ├── jd_matcher.py               # Groq LLM JD-Resume evaluation & multi-model fallback
-│   ├── job_api.py                  # Scraper cascade (Wellfound, YC, Peerlist, Internshala, etc.)
+│   ├── job_api.py                  # 25-portal fetchers in CSV order (see internship_sources_autonomous_agent.csv)
 │   ├── resume_parser.py            # PDF parsing & dynamic AI search query generator
 │   ├── semantic_matcher.py         # Embedding-based cosine similarity pre-filter
 │   └── whatsapp_handler.py         # Twilio WhatsApp alert formatter & sender
@@ -339,15 +339,20 @@ To prevent database bloat on managed PostgreSQL (e.g. Supabase) and ensure maxim
 
 ### 7.1 Priority Order & Platform Hierarchy
 
-1. 🥇 **Primary portals (priority order)**: Internshala, Peerlist, Wellfound,
-   Y Combinator (Workatastartup & HN), Greenhouse Boards, SimplifyJobs, Pitt CSC.
-   Each portal has a per-run quota; the pipeline halts once the target of
-   qualified matches is reached.
-2. 🥈 **Fallback — LinkedIn India**: activates only when the primary portals
-   leave the quota unfulfilled. Queries LinkedIn India with `f_JT=I`
-   (Internship) and `f_E=1` (Entry-level) parameters across widening time
-   windows (24h, then 72h).
-3. Every listing — primary or fallback — passes the same strict India location
+1. 🥇 **Pass 1 — Main portals (CSV order)**: Y Combinator, Startup Jobs,
+   Wellfound, Cutshort, LinkedIn, Instahyre, Hirist, Naukri. Each portal has a
+   per-run quota; the pipeline halts once the target of qualified matches is
+   reached.
+2. 🥈 **Pass 2 — CSV Fallback portals (17)**: Hacker News Who is Hiring,
+   Remote OK, Remotive, Himalayas, We Work Remotely, Built In, Welcome to the
+   Jungle, Underdog.io, NoDesk, Remote Rocketship, InternDoor, Jobsii, the
+   Direct ATS boards (Greenhouse, Lever, Ashby, Workable) and the discovery
+   row — searched in order only while still under target, first within 24h,
+   then within 72h.
+3. 🥉 **Pass 3 — LinkedIn deep-widen safety net**: an uncapped paginated
+   LinkedIn India search (6 offsets × 24h/72h) across all queries, used only
+   if the first two passes leave the quota unfulfilled.
+4. Every listing — main or fallback — passes the same strict India location
    guardrail, the 24-hour date gate, cross-run deduplication, and the
    tech-keyword + semantic pre-filters before LLM scoring.
 
@@ -519,7 +524,7 @@ The design system is built around the narrative of **"Automated Intelligence wit
 
 4. **Filter Toolbar**:
    - Full-text search with live debounce across job titles and companies.
-   - Platform select dropdown (`All Platforms`, `LinkedIn (Fallback)`, `Internshala`, `Peerlist`, `Wellfound`, `Y Combinator`, `Greenhouse`, `SimplifyJobs`, `Pitt CSC`).
+   - Platform select dropdown grouped by pass (Main / Fallback / Fallback–Direct ATS / Fallback–Discovery), mirroring `internship_sources_autonomous_agent.csv`.
    - Interactive match score slider (`Score > [threshold]`).
    - Status pill toggles (`ALL`, `SAVED`, `APPLIED`, `REJECTED`).
    - Primary **"Run Pipeline"** CTA button with animated loading spinner.

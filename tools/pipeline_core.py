@@ -26,7 +26,8 @@ import dateutil.parser
 from config.settings import settings
 from db.database import get_db_context, cleanup_expired_rejected_jobs
 from db.models import Job, PipelineRun
-from tools.job_api import get_scraper_platforms, is_located_in_india, fetch_linkedin_jobs
+from tools.job_api import (get_scraper_platforms, get_fallback_platforms,
+                           is_located_in_india, fetch_linkedin_jobs)
 from tools.semantic_matcher import (
     ResumeEmbedder,
     classify_role_type,
@@ -264,6 +265,135 @@ def process_jobs(target_matches: int = 25, threshold: int = 70, source: str = "c
                "message": f"Starting primary portal search (Target: {target_matches} verified India AI openings across {len(platforms)} platforms)...",
                "data": [{"name": p["name"], "quota": p["quota"]} for p in platforms]}
 
+        def _harvest(raw_jobs: List[Dict[str, Any]], tag: str, window: int,
+                     source_key: str) -> Iterator[Dict[str, Any]]:
+            """Shared scrape → dedup → guardrail → date gate → enrich → classify →
+            score stage for every pass (Main, CSV fallback, LinkedIn deep-widen).
+
+            `tag` names the origin in log messages, `window` is the date-gate
+            window in hours, `source_key` feeds the per-platform match counts.
+            Nested generator over pipeline state; counters rebound via nonlocal.
+            """
+            nonlocal total_scraped_count, duplicate_skipped_count, semantic_filtered_count
+            total_scraped_count += len(raw_jobs)
+
+            for j in raw_jobs:
+                if abort():
+                    yield {"step": "aborted", "message": "Pipeline aborted (client disconnected).",
+                           "data": summary_data(status="aborted")}
+                    return
+                if len(scored_jobs) >= target_matches:
+                    break
+
+                link = (j.get("link") or "").strip().lower()
+                apply_url = (j.get("apply_url") or "").strip().lower()
+                title = (j.get("title") or "").strip().lower()
+                company = (j.get("company") or "").strip().lower()
+                sig = (title, company)
+
+                if (link in db_links or
+                    apply_url in db_apply_urls or
+                    sig in db_title_company or
+                    link in seen_in_run_links or
+                    sig in seen_in_run_signatures):
+                    duplicate_skipped_count += 1
+                    continue
+
+                # Strict India location guardrail
+                if not is_located_in_india(j):
+                    continue
+
+                # Hard date gate (24h on Main; the pass's own window on fallbacks)
+                if not passes_date_gate(j.get("posted_at"), window):
+                    continue
+
+                if link:
+                    seen_in_run_links.add(link)
+                if apply_url:
+                    seen_in_run_links.add(apply_url)
+                if title and company:
+                    seen_in_run_signatures.add(sig)
+
+                desc = j.get("description", "")
+                if len(desc.strip()) < MIN_LLM_DESCRIPTION_CHARS and j.get("link"):
+                    try:
+                        enriched = fetch_full_job_description(j["link"])
+                        if enriched and len(enriched) > len(desc):
+                            desc = enriched
+                            j["description"] = desc
+                    except Exception:
+                        pass
+
+                if not desc or len(desc.strip()) < 30:
+                    continue
+
+                role_type = classify_role_type(j)
+                work_mode = classify_work_mode(j)
+                j["role_type"] = role_type
+                j["work_mode"] = work_mode
+
+                sem_score = embedder.compute_semantic_score(desc, j.get("title", ""))
+                j["semantic_score"] = sem_score
+
+                # Explicit whole-word tech keyword → skip the cheap semantic pre-filter
+                is_explicit_tech = is_explicit_tech_job(j.get("title", ""), desc)
+
+                if not is_explicit_tech and sem_score < 15.0:
+                    semantic_filtered_count += 1
+                    yield {"step": "matching",
+                           "message": f"⏩ [{tag}] Pre-filtered non-tech role ({sem_score}/100): {j['title']} @ {j['company']}"}
+                    continue
+
+                yield {"step": "matching",
+                       "message": f"[{len(scored_jobs)}/{target_matches} Found] 🔄 Scoring [{tag} | {role_type.upper()}|{work_mode.upper()}]: {j['title']} @ {j['company']} (Semantic: {sem_score})..."}
+
+                try:
+                    result = match_resume_to_job(resume_text, desc)
+                    score = result.get("score", 0)
+                    reasoning = result.get("reasoning", "")
+                    key_matches = result.get("key_matches", [])
+                except Exception as e:
+                    yield {"step": "matching", "message": f"❌ Error scoring {j['title']}: {e}"}
+                    continue
+
+                j["match_score"] = score
+                j["match_reasoning"] = reasoning
+                j["key_matches"] = key_matches
+
+                # No real JD even after enrichment → deliver honestly as
+                # "apply link only"; never let the LLM invent a score.
+                if score is None:
+                    unscored_jobs.append(j)
+                    yield {"step": "matching",
+                           "message": f"⏸️ Unscored — no real job description after enrichment ({len(desc)} chars): {j['title']} @ {j['company']} → apply link only"}
+                    continue
+
+                job_card = build_job_card(j, score, reasoning, sem_score, role_type,
+                                          work_mode, len(scored_jobs) + 1)
+
+                emoji = "✅" if score >= threshold else "⬇️"
+                yield {"step": "matching",
+                       "message": f"[{len(scored_jobs)+1}/{target_matches}] {emoji} [{tag} | {role_type.upper()}|{work_mode.upper()}] {j['title']} @ {j['company']} → {score}/100",
+                       "data": {
+                           "title": j["title"],
+                           "company": j["company"],
+                           "score": score,
+                           "role_type": role_type,
+                           "work_mode": work_mode,
+                           "semantic_score": sem_score,
+                           "job": job_card if score >= threshold else None,
+                       }}
+
+                if score >= threshold:
+                    scored_jobs.append(j)
+                    platform_matched_counts[source_key] = platform_matched_counts.get(source_key, 0) + 1
+                    if len(scored_jobs) >= target_matches:
+                        yield {"step": "matching",
+                               "message": f"🎉 Reached exact target of {target_matches} qualified India AI openings on {tag}! Halting search."}
+                        break
+
+                time.sleep(RATE_LIMIT_SECS)
+
         # ── Node 1: Primary Portals Search ─────────────────────────────────
         for p_idx, platform in enumerate(platforms, 1):
             if len(scored_jobs) >= target_matches:
@@ -295,130 +425,57 @@ def process_jobs(target_matches: int = 25, threshold: int = 70, source: str = "c
                     yield {"step": "scraping", "message": f"⚠️ Scraper warning on {plat_name}: {e}"}
                     continue
 
-                total_scraped_count += len(raw_jobs)
+                yield from _harvest(raw_jobs, plat_name, 24, plat_source)
 
-                for j in raw_jobs:
-                    if abort():
-                        yield {"step": "aborted", "message": "Pipeline aborted (client disconnected).",
-                               "data": summary_data(status="aborted")}
-                        return
+        # ── Node 2: CSV Fallback Portals (only while still under target) ──
+        if len(scored_jobs) < target_matches:
+            fallbacks = get_fallback_platforms()
+            needed = target_matches - len(scored_jobs)
+            yield {"step": "scraping",
+                   "message": f"⚠️ Fallback Node Activated: Primary platforms yielded {len(scored_jobs)}/{target_matches} matches. Searching {len(fallbacks)} CSV fallback portals for {needed} more..."}
+
+            # 24h window first, then 72h if still below target
+            for time_window in [24, 72]:
+                if len(scored_jobs) >= target_matches:
+                    break
+
+                for f_idx, platform in enumerate(fallbacks, 1):
                     if len(scored_jobs) >= target_matches:
                         break
 
-                    link = (j.get("link") or "").strip().lower()
-                    apply_url = (j.get("apply_url") or "").strip().lower()
-                    title = (j.get("title") or "").strip().lower()
-                    company = (j.get("company") or "").strip().lower()
-                    sig = (title, company)
+                    plat_name = platform["name"]
+                    plat_source = platform["source"]
+                    plat_fn = platform["fn"]
+                    plat_quota = platform["quota"]
+                    plat_matches_before = platform_matched_counts.setdefault(plat_source, 0)
 
-                    if (link in db_links or
-                        apply_url in db_apply_urls or
-                        sig in db_title_company or
-                        link in seen_in_run_links or
-                        sig in seen_in_run_signatures):
-                        duplicate_skipped_count += 1
-                        continue
+                    yield {"step": "scraping",
+                           "message": f"🔽 [Fallback {f_idx}/{len(fallbacks)}] Searching {plat_name} ({time_window}h, Quota: {plat_quota}, Remaining: {target_matches - len(scored_jobs)} matches)..."}
 
-                    # Strict India location guardrail
-                    if not is_located_in_india(j):
-                        continue
-
-                    # Hard 24-hour date gate (primary portals)
-                    if not passes_date_gate(j.get("posted_at"), 24):
-                        continue
-
-                    if link:
-                        seen_in_run_links.add(link)
-                    if apply_url:
-                        seen_in_run_links.add(apply_url)
-                    if title and company:
-                        seen_in_run_signatures.add(sig)
-
-                    desc = j.get("description", "")
-                    if len(desc.strip()) < MIN_LLM_DESCRIPTION_CHARS and j.get("link"):
-                        try:
-                            enriched = fetch_full_job_description(j["link"])
-                            if enriched and len(enriched) > len(desc):
-                                desc = enriched
-                                j["description"] = desc
-                        except Exception:
-                            pass
-
-                    if not desc or len(desc.strip()) < 30:
-                        continue
-
-                    role_type = classify_role_type(j)
-                    work_mode = classify_work_mode(j)
-                    j["role_type"] = role_type
-                    j["work_mode"] = work_mode
-
-                    sem_score = embedder.compute_semantic_score(desc, j.get("title", ""))
-                    j["semantic_score"] = sem_score
-
-                    # Explicit whole-word tech keyword → skip the cheap semantic pre-filter
-                    is_explicit_tech = is_explicit_tech_job(j.get("title", ""), desc)
-
-                    if not is_explicit_tech and sem_score < 15.0:
-                        semantic_filtered_count += 1
-                        yield {"step": "matching",
-                               "message": f"⏩ [{role_type.upper()}|{work_mode.upper()}] Pre-filtered non-tech role ({sem_score}/100): {j['title']} @ {j['company']}"}
-                        continue
-
-                    yield {"step": "matching",
-                           "message": f"[{len(scored_jobs)}/{target_matches} Found] 🔄 Scoring [{role_type.upper()}|{work_mode.upper()}]: {j['title']} @ {j['company']} (Semantic: {sem_score})..."}
-
-                    try:
-                        result = match_resume_to_job(resume_text, desc)
-                        score = result.get("score", 0)
-                        reasoning = result.get("reasoning", "")
-                        key_matches = result.get("key_matches", [])
-                    except Exception as e:
-                        yield {"step": "matching", "message": f"❌ Error scoring {j['title']}: {e}"}
-                        continue
-
-                    j["match_score"] = score
-                    j["match_reasoning"] = reasoning
-                    j["key_matches"] = key_matches
-
-                    # No real JD even after enrichment → deliver honestly as
-                    # "apply link only"; never let the LLM invent a score.
-                    if score is None:
-                        unscored_jobs.append(j)
-                        yield {"step": "matching",
-                               "message": f"⏸️ Unscored — no real job description after enrichment ({len(desc)} chars): {j['title']} @ {j['company']} → apply link only"}
-                        continue
-
-                    job_card = build_job_card(j, score, reasoning, sem_score, role_type,
-                                              work_mode, len(scored_jobs) + 1)
-
-                    emoji = "✅" if score >= threshold else "⬇️"
-                    yield {"step": "matching",
-                           "message": f"[{len(scored_jobs)+1}/{target_matches}] {emoji} [{role_type.upper()}|{work_mode.upper()}] {j['title']} @ {j['company']} → {score}/100",
-                           "data": {
-                               "title": j["title"],
-                               "company": j["company"],
-                               "score": score,
-                               "role_type": role_type,
-                               "work_mode": work_mode,
-                               "semantic_score": sem_score,
-                               "job": job_card if score >= threshold else None,
-                           }}
-
-                    if score >= threshold:
-                        scored_jobs.append(j)
-                        platform_matched_counts[plat_source] += 1
+                    for query in search_queries:
+                        if abort():
+                            yield {"step": "aborted", "message": "Pipeline aborted (client disconnected).",
+                                   "data": summary_data(status="aborted")}
+                            return
                         if len(scored_jobs) >= target_matches:
-                            yield {"step": "matching",
-                                   "message": f"🎉 Reached exact target of {target_matches} qualified India AI openings on {plat_name}! Halting search."}
+                            break
+                        if (platform_matched_counts[plat_source] - plat_matches_before) >= plat_quota:
                             break
 
-                    time.sleep(RATE_LIMIT_SECS)
+                        yield {"step": "scraping", "message": f"[{plat_name}] Fetching: \"{query}\" ({time_window}h)..."}
+                        try:
+                            raw_jobs = plat_fn(query, 10, time_window, 0)
+                        except Exception as e:
+                            yield {"step": "scraping", "message": f"⚠️ Scraper warning on {plat_name}: {e}"}
+                            continue
 
-        # ── Node 2: LinkedIn Fallback Node (ONLY if quota < target) ────────
+                        yield from _harvest(raw_jobs, plat_name, time_window, plat_source)
+
+        # ── Node 3: LinkedIn Deep-Widen Safety Net (uncapped, last resort) ─
         if len(scored_jobs) < target_matches:
             needed = target_matches - len(scored_jobs)
             yield {"step": "scraping",
-                   "message": f"⚠️ Fallback Node Activated: Primary platforms yielded {len(scored_jobs)}/{target_matches} matches. Initiating LinkedIn India search to fulfill quota of {needed} more..."}
+                   "message": f"🔍 Deep-widen Net Activated: {needed} short — paginated LinkedIn India search (6 offsets × 24/72h windows)..."}
 
             # Search LinkedIn India: 24h first, then 72h window if still below target
             for time_window in [24, 72]:
@@ -451,120 +508,7 @@ def process_jobs(target_matches: int = 25, threshold: int = 70, source: str = "c
                             yield {"step": "scraping", "message": f"⚠️ LinkedIn fallback warning: {e}"}
                             continue
 
-                        total_scraped_count += len(raw_jobs)
-
-                        for j in raw_jobs:
-                            if abort():
-                                yield {"step": "aborted", "message": "Pipeline aborted (client disconnected).",
-                                       "data": summary_data(status="aborted")}
-                                return
-                            if len(scored_jobs) >= target_matches:
-                                break
-
-                            link = (j.get("link") or "").strip().lower()
-                            apply_url = (j.get("apply_url") or "").strip().lower()
-                            title = (j.get("title") or "").strip().lower()
-                            company = (j.get("company") or "").strip().lower()
-                            sig = (title, company)
-
-                            if (link in db_links or
-                                apply_url in db_apply_urls or
-                                sig in db_title_company or
-                                link in seen_in_run_links or
-                                sig in seen_in_run_signatures):
-                                duplicate_skipped_count += 1
-                                continue
-
-                            if not is_located_in_india(j):
-                                continue
-
-                            # Date gate uses the fallback's own search window
-                            if not passes_date_gate(j.get("posted_at"), time_window):
-                                continue
-
-                            if link:
-                                seen_in_run_links.add(link)
-                            if apply_url:
-                                seen_in_run_links.add(apply_url)
-                            if title and company:
-                                seen_in_run_signatures.add(sig)
-
-                            desc = j.get("description", "")
-                            if len(desc.strip()) < MIN_LLM_DESCRIPTION_CHARS and j.get("link"):
-                                try:
-                                    enriched = fetch_full_job_description(j["link"])
-                                    if enriched and len(enriched) > len(desc):
-                                        desc = enriched
-                                        j["description"] = desc
-                                except Exception:
-                                    pass
-
-                            if not desc or len(desc.strip()) < 30:
-                                continue
-
-                            role_type = classify_role_type(j)
-                            work_mode = classify_work_mode(j)
-                            j["role_type"] = role_type
-                            j["work_mode"] = work_mode
-
-                            sem_score = embedder.compute_semantic_score(desc, j.get("title", ""))
-                            j["semantic_score"] = sem_score
-
-                            is_explicit_tech = is_explicit_tech_job(j.get("title", ""), desc)
-
-                            if not is_explicit_tech and sem_score < 15.0:
-                                semantic_filtered_count += 1
-                                yield {"step": "matching",
-                                       "message": f"⏩ [LinkedIn Fallback] Pre-filtered non-tech role ({sem_score}/100): {j['title']} @ {j['company']}"}
-                                continue
-
-                            yield {"step": "matching",
-                                   "message": f"[{len(scored_jobs)}/{target_matches} Found] 🔄 Scoring [LinkedIn Fallback | {role_type.upper()}|{work_mode.upper()}]: {j['title']} @ {j['company']} (Semantic: {sem_score})..."}
-
-                            try:
-                                result = match_resume_to_job(resume_text, desc)
-                                score = result.get("score", 0)
-                                reasoning = result.get("reasoning", "")
-                                key_matches = result.get("key_matches", [])
-                            except Exception as e:
-                                yield {"step": "matching", "message": f"❌ Error scoring {j['title']}: {e}"}
-                                continue
-
-                            j["match_score"] = score
-                            j["match_reasoning"] = reasoning
-                            j["key_matches"] = key_matches
-
-                            if score is None:
-                                unscored_jobs.append(j)
-                                yield {"step": "matching",
-                                       "message": f"⏸️ Unscored — no real job description after enrichment ({len(desc)} chars): {j['title']} @ {j['company']} → apply link only"}
-                                continue
-
-                            job_card = build_job_card(j, score, reasoning, sem_score, role_type,
-                                                      work_mode, len(scored_jobs) + 1)
-
-                            emoji = "✅" if score >= threshold else "⬇️"
-                            yield {"step": "matching",
-                                   "message": f"[{len(scored_jobs)+1}/{target_matches}] {emoji} [LinkedIn Fallback] {j['title']} @ {j['company']} → {score}/100",
-                                   "data": {
-                                       "title": j["title"],
-                                       "company": j["company"],
-                                       "score": score,
-                                       "role_type": role_type,
-                                       "work_mode": work_mode,
-                                       "semantic_score": sem_score,
-                                       "job": job_card if score >= threshold else None,
-                                   }}
-
-                            if score >= threshold:
-                                scored_jobs.append(j)
-                                platform_matched_counts["linkedin"] = platform_matched_counts.get("linkedin", 0) + 1
-                                if len(scored_jobs) >= target_matches:
-                                    yield {"step": "matching",
-                                           "message": f"🎉 LinkedIn fallback fulfilled the quota of {target_matches} qualified India AI listings!"}
-                                    break
-
-                            time.sleep(RATE_LIMIT_SECS)
+                        yield from _harvest(raw_jobs, "LinkedIn Fallback", time_window, "linkedin")
 
         # ── Sort and slice top target matches ──────────────────────────────
         scored_jobs.sort(key=lambda x: x.get("match_score", 0), reverse=True)

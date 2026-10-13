@@ -652,14 +652,39 @@ export default function App() {
                     onChange={e => setSourceFilter(e.target.value)}
                   >
                     <option value="all">All Platforms</option>
-                    <option value="linkedin">LinkedIn (Fallback)</option>
-                    <option value="internshala">Internshala (India)</option>
-                    <option value="peerlist">Peerlist (India)</option>
-                    <option value="wellfound">Wellfound</option>
-                    <option value="yc">Y Combinator</option>
-                    <option value="greenhouse">Greenhouse Boards</option>
-                    <option value="simplifyjobs">SimplifyJobs</option>
-                    <option value="pittcsc">Pitt CSC Tracker</option>
+                    <optgroup label="Main (primary pass)">
+                      <option value="yc">Y Combinator</option>
+                      <option value="startupjobs">Startup Jobs</option>
+                      <option value="wellfound">Wellfound</option>
+                      <option value="cutshort">Cutshort</option>
+                      <option value="linkedin">LinkedIn</option>
+                      <option value="instahyre">Instahyre</option>
+                      <option value="hirist">Hirist</option>
+                      <option value="naukri">Naukri</option>
+                    </optgroup>
+                    <optgroup label="Fallback (remote & startup boards)">
+                      <option value="hn">Hacker News – Who is Hiring</option>
+                      <option value="remoteok">Remote OK</option>
+                      <option value="remotive">Remotive</option>
+                      <option value="himalayas">Himalayas</option>
+                      <option value="wwr">We Work Remotely</option>
+                      <option value="builtin">Built In</option>
+                      <option value="wttj">Welcome to the Jungle</option>
+                      <option value="underdog">Underdog.io</option>
+                      <option value="nodesk">NoDesk</option>
+                      <option value="remoterocketship">Remote Rocketship</option>
+                      <option value="interndoor">InternDoor</option>
+                      <option value="jobsii">Jobsii</option>
+                    </optgroup>
+                    <optgroup label="Fallback – Direct ATS">
+                      <option value="greenhouse">Greenhouse</option>
+                      <option value="lever">Lever</option>
+                      <option value="ashby">Ashby</option>
+                      <option value="workable">Workable</option>
+                    </optgroup>
+                    <optgroup label="Fallback – Discovery">
+                      <option value="discovery">Startup Career Pages</option>
+                    </optgroup>
                   </select>
 
                   {/* Score Slider */}
@@ -990,13 +1015,11 @@ export default function App() {
                 <div className="bg-[#f8f9ff] p-4 rounded-xl border border-[#d4dde8]">
                   <h4 className="text-[12px] font-bold uppercase text-[#0f1c2b] mb-2">Active Scraper Priority Cascade</h4>
                   <div className="flex flex-wrap items-center gap-2 text-[12px]">
-                    <span className="px-3 py-1 bg-[#136299] text-white font-semibold rounded-lg">1. Internshala</span>
+                    <span className="px-3 py-1 bg-[#136299] text-white font-semibold rounded-lg">1. Main · 8 portals</span>
                     <span className="text-[#7a95b0]">→</span>
-                    <span className="px-3 py-1 bg-[#5b9bd5] text-white font-semibold rounded-lg">2. Peerlist</span>
+                    <span className="px-3 py-1 bg-[#5b9bd5] text-white font-semibold rounded-lg">2. Fallback · 17 portals (24h→72h)</span>
                     <span className="text-[#7a95b0]">→</span>
-                    <span className="px-3 py-1 bg-[#39a794] text-white font-semibold rounded-lg">3. Wellfound + 4 more portals</span>
-                    <span className="text-[#7a95b0]">→</span>
-                    <span className="px-3 py-1 bg-[#7a95b0] text-white font-semibold rounded-lg">LinkedIn India Fallback</span>
+                    <span className="px-3 py-1 bg-[#39a794] text-white font-semibold rounded-lg">3. LinkedIn Deep-Widen (uncapped)</span>
                     <span className="text-[#7a95b0]">→</span>
                     <span className="px-3 py-1 bg-[#eef4ff] text-[#003151] font-semibold rounded-lg border border-[#cfe5ff]">
                       🛑 Immediate Early-Stop at {pipelineTarget} matches

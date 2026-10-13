@@ -1,0 +1,26 @@
+﻿Website / Source,Website Link,Priority,Primary Use,Agent Acquisition Method,Automation Potential
+Y Combinator Jobs,https://www.ycombinator.com/jobs,Main,YC startup jobs,Web/API/structured pages; use filters; follow original company application link,High
+Startup Jobs,https://startup.jobs,Main,Startup jobs,Official REST API or RSS; filter role/country/remote/employment type,Very High
+Wellfound,https://wellfound.com/jobs,Main,Startup jobs,Use permitted website access/manual/search-assisted discovery; avoid aggressive scraping,Low/Medium
+Cutshort,https://cutshort.io,Main,Indian tech/startup hiring,Use available platform/API capabilities where permitted; otherwise search-assisted discovery,Medium
+LinkedIn Jobs,https://www.linkedin.com/jobs,Main,Broad startup/tech hiring,Official/approved integrations or search-assisted workflow; do not scrape aggressively,Low/Medium
+Instahyre,https://www.instahyre.com,Main,Indian tech hiring,Search-assisted/approved access; extract only permitted public data,Medium
+Hirist,https://www.hirist.tech,Main,Indian tech jobs,Search-assisted website extraction where permitted,Medium
+Naukri,https://www.naukri.com,Main,Indian jobs/startups,Search-assisted/approved access; avoid aggressive automated scraping,Low/Medium
+Hacker News – Who is Hiring,https://news.ycombinator.com/jobs,Fallback,Direct startup/founder hiring,Parse public monthly hiring threads; extract company/role/contact/application URL,High
+Remote OK,https://remoteok.com,Fallback,Remote tech/startup jobs,Public website/RSS/API where available; filter remote + internship/entry-level keywords,High
+Remotive,https://remotive.com,Fallback,Remote tech/startup jobs,API/RSS/structured pages where permitted; filter by role and location,High
+Himalayas,https://himalayas.app,Fallback,Remote jobs,"Official public JSON API, RSS, or MCP; filter India/remote + Intern employment type",Very High
+We Work Remotely,https://weworkremotely.com,Fallback,Remote tech jobs,RSS/structured pages where permitted; search-assisted extraction,Medium
+Built In,https://builtin.com/jobs,Fallback,US/tech/startup jobs,Website/search-assisted discovery; follow original employer application,Medium
+Welcome to the Jungle,https://www.welcometothejungle.com,Fallback,Curated startup/tech jobs,Website/search-assisted discovery where permitted,Medium
+Underdog.io,https://underdog.io,Fallback,Curated startup hiring,Website/search-assisted discovery; follow original application,Medium
+NoDesk,https://nodesk.co/remote-jobs,Fallback,Remote jobs,Website/RSS/structured-page discovery where permitted,Medium
+Remote Rocketship,https://www.remoterocketship.com,Fallback,Remote tech jobs,Website/search-assisted discovery; follow original application,Medium
+InternDoor,https://interndoor.com,Fallback,India internships/entry-level,Website/category pages; filter AI/ML/Data/Software and verify original posting,Medium/High
+Jobsii,https://jobsii.com,Fallback,India AI/ML internships/jobs,Category pages/search-assisted discovery; verify original company listing,Medium
+Greenhouse Career Pages,https://www.greenhouse.com,Fallback/Direct ATS,Company ATS job listings,Discover company boards and query public job pages/feeds where available,Very High
+Lever Career Pages,https://www.lever.co,Fallback/Direct ATS,Company ATS job listings,Discover Lever-hosted company boards and retrieve public job data where permitted,Very High
+Ashby Job Boards,https://www.ashbyhq.com,Fallback/Direct ATS,Startup/company ATS listings,Discover public Ashby job boards and retrieve public structured data where permitted,Very High
+Workable,https://www.workable.com,Fallback/Direct ATS,Company ATS listings,Discover public Workable career pages and retrieve public job data where permitted,High
+Direct Startup Career Pages,https://www.google.com/search?q=startup+careers+AI+internship,Fallback/Discovery,Original company postings,Search engine discovery → career page → parse public job page → store canonical application URL,Very High

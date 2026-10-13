@@ -26,7 +26,7 @@ The platform continuously monitors top startup job ecosystems, extracts candidat
 
 | Capability | Technical Implementation | Impact |
 |---|---|---|
-| **India-First Sourcing** | Cascading scraper over 7 portals (Internshala, Peerlist, Wellfound, YC, Greenhouse, SimplifyJobs, Pitt CSC) with a LinkedIn India fallback | Prioritizes fresh India-based AI openings with direct apply links |
+| **India-First Sourcing** | 25-portal cascade in CSV order — 8 Main, then 17 Fallback, then an uncapped LinkedIn deep-widen safety net | Prioritizes fresh India-based AI openings with direct apply links |
 | **India-Only Filtering** | Strict location guardrail accepting only Indian locations or India-tagged titles; all work modes (onsite, hybrid, remote) | Delivers only openings you can actually join from India |
 | **AI/ML-Focused Filtering** | AI/GenAI/LLM search queries, a whole-word tech keyword gate, and a semantic pre-filter | Keeps listings inside the AI/ML domain; non-tech roles are dropped before LLM scoring |
 | **Role-Type Classification** | Heuristic classifier labelling internship, full-time, contract and part-time roles, plus remote/hybrid/onsite work mode | Cards and filters show the real role type and work mode |
@@ -59,9 +59,9 @@ The platform continuously monitors top startup job ecosystems, extracts candidat
                                        ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                   2. PRIORITY-ORDERED SCRAPER CASCADE                       │
-│   • Priority 1-7: India portals — Internshala, Peerlist, Wellfound, YC,     │
-│     Greenhouse, SimplifyJobs, Pitt CSC                                      │
-│   • Fallback: LinkedIn India search (fills any remaining quota)             │
+│   • Pass 1 "Main": YC, Startup Jobs, Wellfound, Cutshort, LinkedIn,         │
+│     Instahyre, Hirist, Naukri → Pass 2 "Fallback": 17 more portals          │
+│   • Pass 3: LinkedIn deep-widen safety net (uncapped, last resort)          │
 └──────────────────────────────────────┬──────────────────────────────────────┘
                                        │
                                        ▼
@@ -107,7 +107,7 @@ The platform continuously monitors top startup job ecosystems, extracts candidat
 | **Database & ORM** | PostgreSQL (Render Cloud), SQLite (Local Fallback), SQLAlchemy 2.0 |
 | **Frontend UI** | React 18, TypeScript, Vite 8, Vanilla CSS Design System, Lucide / Material Symbols |
 | **Document Processing** | PyMuPDF (`fitz`), PyPDF2 |
-| **Scraping & Ingestion** | Requests, BeautifulSoup4, Public API Integrations (Internshala, Peerlist, Wellfound, YC, Greenhouse, SimplifyJobs, Pitt CSC, LinkedIn) |
+| **Scraping & Ingestion** | Requests, BeautifulSoup4, Public APIs & feeds for 25 portals (YC, Startup Jobs, Wellfound, Cutshort, LinkedIn, Instahyre, Hirist, Naukri + 17 fallback sources) |
 | **Notification Services** | Google Gmail API (OAuth 2.0 MIME), Twilio Messaging API (WhatsApp), SendGrid API |
 | **Scheduling & CI/CD** | GitHub Actions Cron, APScheduler (`AsyncIOScheduler`), Render Web Services |
 
@@ -150,7 +150,7 @@ Autonomous-Internship-Agent/
 │   ├── email_sender.py             # Multi-tier email delivery (Gmail SMTP & OAuth 2.0)
 │   ├── jd_fetcher.py               # Full job description text enricher
 │   ├── jd_matcher.py               # Groq LLM JD-Resume evaluation and multi-model fallback
-│   ├── job_api.py                  # Multi-source scraper cascade (Wellfound, YC, Peerlist, Internshala, etc.)
+│   ├── job_api.py                  # 25-portal fetchers in CSV order (Main → Fallback → LinkedIn)
 │   ├── resume_parser.py            # PDF parsing and dynamic AI search query generator
 │   ├── semantic_matcher.py         # Embedding-based cosine similarity pre-filter
 │   └── whatsapp_handler.py         # Twilio WhatsApp notification handler
@@ -200,7 +200,7 @@ The web interface is built on the **Glacial Precision** design system, combining
    - Real-time counters for **Scraped Jobs**, **Qualified Openings**, **Applied Submissions**, and **Pipeline Executions**.
 4. **Interactive Filter Toolbar**:
    - Live debounced search by role or company name.
-   - Platform filtering (LinkedIn, Internshala, Peerlist, Wellfound, YC, Greenhouse, SimplifyJobs, Pitt CSC).
+   - Platform filtering (grouped dropdown: Main, Fallback, Direct ATS, Discovery — all 25 portals).
    - Match score threshold slider.
    - Status pill toggles (`ALL`, `SAVED`, `APPLIED`, `REJECTED`).
    - Primary **Run Pipeline** button with live status feedback.
