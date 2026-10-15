@@ -47,7 +47,7 @@ class Job(Base):
     """
     Represents a single internship / job listing scraped from an external
     platform (Y Combinator, Wellfound, LinkedIn, Greenhouse, Instahyre, etc. —
-    all 25 portals in internship_sources_autonomous_agent.csv).
+    all 26 portals in internship_sources_autonomous_agent.csv).
 
     Attributes:
         id              : Auto-incremented primary key.

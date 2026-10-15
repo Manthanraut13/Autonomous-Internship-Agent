@@ -120,9 +120,11 @@ def match_resume_to_job(resume_text: str, job_description: str, max_retries: int
             logger.warning(f"Failed to initialize model {model_name}: {outer_e}")
             continue
 
+    # Every model failed (errors or rate limits): no evaluation happened, so a
+    # score would be fabricated — deliver as unscored ("apply link only").
     return {
-        "score": 0,
-        "reasoning": "Error or rate limit during matching evaluation.",
+        "score": None,
+        "reasoning": "No score available — all LLM evaluation attempts failed; apply link only.",
         "key_matches": [],
         "gaps": []
     }

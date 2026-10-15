@@ -286,11 +286,24 @@ def classify_role_type(job: Dict[str, Any]) -> str:
     """
     Classifies a job as 'internship', 'full-time', 'part-time', or 'contract'
     based on title and description.
+
+    Internship outranks contract: an 'AI Consultant Intern' is an intern, so
+    consulting keywords elsewhere in the text must not demote a declared
+    internship to 'contract'.
     """
     title = (job.get("title") or "").lower()
     desc = (job.get("description") or "").lower()
-    source = (job.get("source") or "").lower()
     combined = f"{title} {desc}"
+
+    # Check internship / fellowship / co-op FIRST (see docstring)
+    internship_keywords = [
+        "intern", "internship", "co-op", "coop", "trainee",
+        "fellow", "fellowship", "apprentice", "apprenticeship",
+        "student", "graduate program", "graduate trainee",
+        "summer program", "summer associate", "working student"
+    ]
+    if any(re.search(r"\b" + re.escape(k) + r"\b", combined) for k in internship_keywords):
+        return "internship"
 
     # Check contract / freelance
     contract_keywords = [
@@ -304,20 +317,6 @@ def classify_role_type(job: Dict[str, Any]) -> str:
     part_time_keywords = ["part-time", "part time", "flexible hours"]
     if any(re.search(r"\b" + re.escape(k) + r"\b", combined) for k in part_time_keywords):
         return "part-time"
-
-    # Check internship / fellowship / co-op
-    internship_keywords = [
-        "intern", "internship", "co-op", "coop", "trainee",
-        "fellow", "fellowship", "apprentice", "apprenticeship",
-        "student", "graduate program", "graduate trainee",
-        "summer program", "summer associate", "working student"
-    ]
-    if any(re.search(r"\b" + re.escape(k) + r"\b", combined) for k in internship_keywords):
-        return "internship"
-
-    # Sources that are inherently internship/fellowship programs
-    if source in {"mlh", "gsoc", "outreachy", "pittcsc", "simplifyjobs"}:
-        return "internship"
 
     # Default to full-time for standard engineering roles
     return "full-time"

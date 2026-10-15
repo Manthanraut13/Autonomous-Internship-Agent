@@ -1,6 +1,7 @@
 ﻿Website / Source,Website Link,Priority,Primary Use,Agent Acquisition Method,Automation Potential
 Y Combinator Jobs,https://www.ycombinator.com/jobs,Main,YC startup jobs,Web/API/structured pages; use filters; follow original company application link,High
 Startup Jobs,https://startup.jobs,Main,Startup jobs,Official REST API or RSS; filter role/country/remote/employment type,Very High
+Web Search (Google/Brave),https://www.google.com,Main,Web-wide internship discovery,"Search API (Google Programmable Search primary, Brave fallback) → open result page → parse JobPosting JSON-LD → canonical application URL",Medium
 Wellfound,https://wellfound.com/jobs,Main,Startup jobs,Use permitted website access/manual/search-assisted discovery; avoid aggressive scraping,Low/Medium
 Cutshort,https://cutshort.io,Main,Indian tech/startup hiring,Use available platform/API capabilities where permitted; otherwise search-assisted discovery,Medium
 LinkedIn Jobs,https://www.linkedin.com/jobs,Main,Broad startup/tech hiring,Official/approved integrations or search-assisted workflow; do not scrape aggressively,Low/Medium

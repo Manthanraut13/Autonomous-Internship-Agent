@@ -5,7 +5,8 @@ Fetches real, live AI listings strictly located in India across the portals list
 internship_sources_autonomous_agent.csv, in that file's order.
 
 Main portals (get_scraper_platforms, CSV "Main" rows):
-  Y Combinator, Startup Jobs, Wellfound, Cutshort, LinkedIn, Instahyre, Hirist, Naukri.
+  Y Combinator, Startup Jobs, Web Search, Wellfound, Cutshort, LinkedIn, Instahyre,
+  Hirist, Naukri.
 
 Fallback portals (get_fallback_platforms, CSV "Fallback" rows, only when still under
 target): Hacker News Who is Hiring, Remote OK, Remotive, Himalayas, We Work Remotely,
@@ -28,6 +29,8 @@ import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
+
+from config.settings import settings
 
 try:
     import requests
@@ -278,6 +281,67 @@ is_remote_or_virtual = is_located_in_india
 
 
 # ---------------------------------------------------------------------------
+# Role guardrails (spec: internships only, in the targeted AI families only)
+# ---------------------------------------------------------------------------
+# Internship declared in the listing TITLE. Word boundaries are mandatory:
+# "international" and "internal" must never match.
+_INTERNSHIP_TITLE_PATTERN = re.compile(
+    r"\b(?:intern(?:ship|ships|s)?|co[\s-]?op|trainee|apprentic(?:e|eship)"
+    r"|fellow(?:ship|ships)?|student)\b",
+    re.IGNORECASE,
+)
+
+# Targeted AI families: AI Automation, AI Engineer, GenAI Developer,
+# AI Generalist, AI Consultant — plus the standard titles they ship under
+# (LLM / ML / NLP / computer vision / agentic agents).
+_AI_ROLE_PATTERN = re.compile(
+    r"\bai\b|\bartificial intelligence\b|\bgen[\s-]?ai\b|\bgenerative ai\b"
+    r"|\bllms?\b|\blarge language models?\b|\bmachine learning\b|\bml\b"
+    r"|\bdeep learning\b|\bnlp\b|\bcomputer vision\b|\bprompt engineer"
+    r"|\bagentic\b|\bai agents?\b|\bneural networks?\b",
+    re.IGNORECASE,
+)
+
+# Generic technical titles: only acceptable when the body proves AI context.
+_GENERIC_TECH_TITLE_PATTERN = re.compile(
+    r"\b(?:engineer|developer|generalist|consultant|researcher|scientist"
+    r"|architect|intern|student)\b",
+    re.IGNORECASE,
+)
+
+
+def is_internship_title(title: str) -> bool:
+    """
+    True only when the title itself declares an internship (or equivalent:
+    co-op, trainee, apprenticeship, fellowship). Full-time roles are rejected
+    even when their description mentions interns — the product delivers
+    internships exclusively.
+    """
+    return bool(title) and bool(_INTERNSHIP_TITLE_PATTERN.search(title))
+
+
+def is_ai_role(title: str, description: str = "") -> bool:
+    """
+    True when the listing belongs to the targeted AI families.
+
+    Evidence rules (specificity is the requirement):
+      - ACCEPT: an AI term appears in the TITLE ('AI Engineer Intern',
+        'GenAI Developer', 'AI Automation Trainee', 'ML Intern').
+      - ACCEPT: a generic technical title (Engineer, Developer, Generalist,
+        Consultant, Intern, ...) whose DESCRIPTION proves AI context
+        ('Build LLM agents...', 'production machine learning pipelines').
+      - REJECT: everything else. 'ai' as a substring ('detail', 'maintain',
+        'retail') never matches — the pattern is word-bounded.
+    """
+    title = title or ""
+    if _AI_ROLE_PATTERN.search(title):
+        return True
+    return bool(_GENERIC_TECH_TITLE_PATTERN.search(title)) and bool(
+        _AI_ROLE_PATTERN.search(description or "")
+    )
+
+
+# ---------------------------------------------------------------------------
 # LinkedIn Job Search (FALLBACK NODE ONLY)
 #   Invoked ONLY when the primary 25-listing quota is not fulfilled.
 #   Target: India. Keeps all options open: full-time, part-time, contract,
@@ -358,6 +422,108 @@ def fetch_linkedin_jobs(search_query: str = "AI Engineer", location: str = "Indi
         logger.error(f"Error fetching LinkedIn jobs: {e}")
 
     return jobs[:limit]
+
+
+# ---------------------------------------------------------------------------
+# CSV row 4 "Web Search" — browser-grade search (Main pass, position 3)
+# ---------------------------------------------------------------------------
+def _websearch_provider_links(query: str, limit: int = 10) -> List[Dict[str, str]]:
+    """
+    Organic results from the configured search API; first provider wins:
+      1. Google Programmable Search JSON API (settings.google_cse_api_key +
+         settings.google_cse_cx) — official Google search, free tier.
+      2. Brave Search API (settings.brave_search_api_key) — free tier.
+    Keyless engines (Bing RSS/HTML, Google/DDG HTML, Mojeek, SearXNG, ...)
+    are bot-walled or serve decoy results — verified live — so they are not
+    used. Returns [{"url", "title"}...]; [] when no key or all providers fail.
+    """
+    if settings.google_cse_api_key and settings.google_cse_cx:
+        data = _get_json("https://www.googleapis.com/customsearch/v1", params={
+            "key": settings.google_cse_api_key,
+            "cx": settings.google_cse_cx,
+            "q": query,
+            "num": min(max(limit, 1), 10),
+        })
+        items = (data or {}).get("items") or []
+        if items:
+            return [{"url": it.get("link", ""), "title": it.get("title", "")}
+                    for it in items if it.get("link")]
+    if settings.brave_search_api_key:
+        data = _get_json(
+            "https://api.search.brave.com/res/v1/web/search",
+            params={"q": query, "count": min(max(limit, 1), 20),
+                    "search_lang": "en", "country": "in"},
+            headers={"X-Subscription-Token": settings.brave_search_api_key,
+                     "Accept": "application/json", "Accept-Encoding": "gzip"},
+        )
+        results = ((data or {}).get("web") or {}).get("results") or []
+        if results:
+            return [{"url": it.get("url", ""), "title": it.get("title", "")}
+                    for it in results if it.get("url")]
+    return []
+
+
+def fetch_websearch_jobs(search_query: str = "AI Engineer", limit: int = 10,
+                         posted_within_hours: int = 24) -> List[Dict[str, Any]]:
+    """
+    CSV 'Web Search' (Main pass, position 3): real web search — Google
+    Programmable Search first, Brave Search API as fallback. Every result page
+    is opened, and kept ONLY when it exposes a real JobPosting JSON-LD block:
+    each delivered listing is a genuine posting at its canonical URL; search
+    snippets are never trusted as listings. The pipeline's own gates
+    (internship-only, AI-family, India, date window) still apply.
+
+    shortcut: with neither key configured (or on provider failure) the portal
+    returns [] and logs once — it cannot discover anything by itself, by design.
+    """
+    key = "websearch"
+    if _recently_empty(key):
+        return []
+    results = _websearch_provider_links(f"{search_query} internship India",
+                                        limit=max(limit, 10))
+    if not results:
+        if not (settings.google_cse_api_key or settings.brave_search_api_key):
+            logger.warning(
+                "websearch: no search API key configured — set GOOGLE_CSE_API_KEY + "
+                "GOOGLE_CSE_CX (Google Programmable Search) or BRAVE_SEARCH_API_KEY "
+                "(Brave Search) to enable the Web Search portal.")
+        _mark_empty(key)
+        return []
+    jobs: List[Dict[str, Any]] = []
+    seen: set = set()
+    for item in results:
+        if len(jobs) >= limit:
+            break
+        link = (item.get("url") or "").strip()
+        if not link or link in seen:
+            continue
+        seen.add(link)
+        page = _get_text(link)
+        if not page:
+            continue
+        block = _parse_jsonld_job(page)
+        if not block or not block.get("title"):
+            continue  # no structured JobPosting on the page — skip, never fabricate
+        org = block.get("hiringOrganization") or {}
+        loc = block.get("jobLocation") or {}
+        if isinstance(loc, dict):
+            addr = loc.get("address") or {}
+            location = ", ".join(
+                str(addr.get(k, "")) for k in ("addressLocality", "addressCountry")
+                if isinstance(addr, dict) and addr.get(k)
+            )
+        else:
+            location = str(loc)
+        jobs.append({
+            "title": block["title"],
+            "company": org.get("name") if isinstance(org, dict) else str(org or ""),
+            "description": _clean_html(block.get("description") or "")[:1500],
+            "link": link, "apply_url": link, "location": location,
+            "source": "websearch",
+            # date window is enforced pipeline-side by passes_date_gate()
+            "posted_at": parse_job_date(block.get("datePosted")),
+        })
+    return jobs
 
 
 # ---------------------------------------------------------------------------
@@ -653,7 +819,8 @@ def _matches_query(text: str, terms: List[str]) -> bool:
     if not terms:
         return True
     hay = text.lower()
-    return any(t in hay for t in terms)
+    # Word-start match: term "ai" must not hit "detail"/"maintain"/"email".
+    return any(re.search(r"\b" + re.escape(t), hay) for t in terms)
 
 
 def _split_title_company(title: str) -> tuple:
@@ -1685,6 +1852,7 @@ PLATFORM_QUOTAS = {
     # CSV "Main"
     "yc":               6,
     "startupjobs":      4,
+    "websearch":        4,
     "wellfound":        6,
     "cutshort":         4,
     "linkedin":        10,
@@ -1732,6 +1900,12 @@ def get_scraper_platforms() -> List[Dict[str, Any]]:
             "source": "startupjobs",
             "quota": PLATFORM_QUOTAS["startupjobs"],
             "fn": lambda q, lim, hrs, off: fetch_startupjobs_jobs(q, limit=lim, posted_within_hours=hrs)
+        },
+        {
+            "name": "Web Search (Bing)",
+            "source": "websearch",
+            "quota": PLATFORM_QUOTAS["websearch"],
+            "fn": lambda q, lim, hrs, off: fetch_websearch_jobs(q, limit=lim, posted_within_hours=hrs)
         },
         {
             "name": "Wellfound (AngelList)",

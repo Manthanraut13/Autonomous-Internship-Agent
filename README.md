@@ -26,9 +26,9 @@ The platform continuously monitors top startup job ecosystems, extracts candidat
 
 | Capability | Technical Implementation | Impact |
 |---|---|---|
-| **India-First Sourcing** | 25-portal cascade in CSV order — 8 Main, then 17 Fallback, then an uncapped LinkedIn deep-widen safety net | Prioritizes fresh India-based AI openings with direct apply links |
+| **India-First Sourcing** | 26-portal cascade in CSV order — 9 Main, then 17 Fallback, then an uncapped LinkedIn deep-widen safety net | Prioritizes fresh India-based AI openings with direct apply links |
 | **India-Only Filtering** | Strict location guardrail accepting only Indian locations or India-tagged titles; all work modes (onsite, hybrid, remote) | Delivers only openings you can actually join from India |
-| **AI/ML-Focused Filtering** | AI/GenAI/LLM search queries, a whole-word tech keyword gate, and a semantic pre-filter | Keeps listings inside the AI/ML domain; non-tech roles are dropped before LLM scoring |
+| **AI/ML-Focused Filtering** | Internship-only title gate, AI-family guardrail (AI Automation / AI Engineer / GenAI / AI Generalist / AI Consultant), whole-word tech keyword gate, semantic pre-filter | Only India-based AI internships reach scoring; full-time roles and non-AI roles are dropped before LLM scoring |
 | **Role-Type Classification** | Heuristic classifier labelling internship, full-time, contract and part-time roles, plus remote/hybrid/onsite work mode | Cards and filters show the real role type and work mode |
 | **Groq LLM Match Engine** | High-throughput inference via `openai/gpt-oss-120b` with automatic model fallback cascade | Provides 0–100 fit scoring — only when a real job description is available; short listings are delivered honestly as "unscored, apply link only" |
 | **Immediate Early-Stop Pipeline** | Traverses priority sources sequentially and halts execution once target quota (25 matches) is met | Reduces API latency and token consumption |
@@ -59,16 +59,17 @@ The platform continuously monitors top startup job ecosystems, extracts candidat
                                        ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                   2. PRIORITY-ORDERED SCRAPER CASCADE                       │
-│   • Pass 1 "Main": YC, Startup Jobs, Wellfound, Cutshort, LinkedIn,         │
-│     Instahyre, Hirist, Naukri → Pass 2 "Fallback": 17 more portals          │
+│   • Pass 1 "Main": YC, Startup Jobs, Web Search, Wellfound, Cutshort,       │
+│     LinkedIn, Instahyre, Hirist, Naukri → Pass 2 "Fallback": 17 more portals│
 │   • Pass 3: LinkedIn deep-widen safety net (uncapped, last resort)          │
 └──────────────────────────────────────┬──────────────────────────────────────┘
                                        │
                                        ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                   3. DEDUPLICATION & SENIORITY FILTERING                    │
-│   • Regex disqualification of Senior / Lead / Staff / 5+ YOE titles         │
-│   • Cross-run database deduplication (URL hash + Title/Company signature)   │
+│             3. PRODUCT GATES: INTERNSHIPS ONLY · AI FAMILY ONLY             │
+│   • Internship-only title gate + AI-family guardrail (AI Automation /       │
+│     AI Engineer / GenAI / AI Generalist / AI Consultant)                    │
+│   • India location guardrail + seniority regex + cross-run dedup            │
 └──────────────────────────────────────┬──────────────────────────────────────┘
                                        │
                                        ▼
@@ -107,7 +108,7 @@ The platform continuously monitors top startup job ecosystems, extracts candidat
 | **Database & ORM** | PostgreSQL (Render Cloud), SQLite (Local Fallback), SQLAlchemy 2.0 |
 | **Frontend UI** | React 18, TypeScript, Vite 8, Vanilla CSS Design System, Lucide / Material Symbols |
 | **Document Processing** | PyMuPDF (`fitz`), PyPDF2 |
-| **Scraping & Ingestion** | Requests, BeautifulSoup4, Public APIs & feeds for 25 portals (YC, Startup Jobs, Wellfound, Cutshort, LinkedIn, Instahyre, Hirist, Naukri + 17 fallback sources) |
+| **Scraping & Ingestion** | Requests, BeautifulSoup4, Public APIs & feeds for 26 portals (YC, Startup Jobs, Web Search, Wellfound, Cutshort, LinkedIn, Instahyre, Hirist, Naukri + 17 fallback sources) |
 | **Notification Services** | Google Gmail API (OAuth 2.0 MIME), Twilio Messaging API (WhatsApp), SendGrid API |
 | **Scheduling & CI/CD** | GitHub Actions Cron, APScheduler (`AsyncIOScheduler`), Render Web Services |
 
@@ -150,7 +151,7 @@ Autonomous-Internship-Agent/
 │   ├── email_sender.py             # Multi-tier email delivery (Gmail SMTP & OAuth 2.0)
 │   ├── jd_fetcher.py               # Full job description text enricher
 │   ├── jd_matcher.py               # Groq LLM JD-Resume evaluation and multi-model fallback
-│   ├── job_api.py                  # 25-portal fetchers in CSV order (Main → Fallback → LinkedIn)
+│   ├── job_api.py                  # 26-portal fetchers in CSV order (Main → Fallback → LinkedIn)
 │   ├── resume_parser.py            # PDF parsing and dynamic AI search query generator
 │   ├── semantic_matcher.py         # Embedding-based cosine similarity pre-filter
 │   └── whatsapp_handler.py         # Twilio WhatsApp notification handler
@@ -200,7 +201,7 @@ The web interface is built on the **Glacial Precision** design system, combining
    - Real-time counters for **Scraped Jobs**, **Qualified Openings**, **Applied Submissions**, and **Pipeline Executions**.
 4. **Interactive Filter Toolbar**:
    - Live debounced search by role or company name.
-   - Platform filtering (grouped dropdown: Main, Fallback, Direct ATS, Discovery — all 25 portals).
+   - Platform filtering (grouped dropdown: Main, Fallback, Direct ATS, Discovery — all 26 portals).
    - Match score threshold slider.
    - Status pill toggles (`ALL`, `SAVED`, `APPLIED`, `REJECTED`).
    - Primary **Run Pipeline** button with live status feedback.
@@ -278,6 +279,8 @@ python run_pipeline.py --target 25 --threshold 70
 |---|---|---|---|
 | `GROQ_API_KEY` | Yes | — | Groq API Key for LLM scoring |
 | `GROQ_MODEL` | No | `openai/gpt-oss-120b` | Model name for resume-JD matching |
+| `GOOGLE_CSE_API_KEY` + `GOOGLE_CSE_CX` | No* | — | Google Programmable Search (Web Search portal; free 100 queries/day) |
+| `BRAVE_SEARCH_API_KEY` | No* | — | Brave Search API fallback (Web Search portal; free 2,000 queries/month) |
 | `DATABASE_URL` | No | SQLite fallback | PostgreSQL database connection URI |
 | `ADMIN_USERNAME` | Yes | `admin` | Username for dashboard login |
 | `ADMIN_PASSWORD` | Yes | — | Password for dashboard login |
@@ -289,6 +292,8 @@ python run_pipeline.py --target 25 --threshold 70
 | `TWILIO_PHONE_NUMBER` | No | `+14155238886` | Twilio WhatsApp Sandbox Number |
 | `USER_WHATSAPP_NUMBER` | No | — | Recipient WhatsApp number (E.164 format) |
 | `MATCH_SCORE_THRESHOLD` | No | `70` | Minimum score threshold for qualified jobs |
+
+\* The Web Search portal needs **one** of the two key options; without either it honestly returns nothing (logged once per run).
 
 ---
 

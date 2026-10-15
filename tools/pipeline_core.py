@@ -27,7 +27,8 @@ from config.settings import settings
 from db.database import get_db_context, cleanup_expired_rejected_jobs
 from db.models import Job, PipelineRun
 from tools.job_api import (get_scraper_platforms, get_fallback_platforms,
-                           is_located_in_india, fetch_linkedin_jobs)
+                           is_located_in_india, is_internship_title, is_ai_role,
+                           fetch_linkedin_jobs)
 from tools.semantic_matcher import (
     ResumeEmbedder,
     classify_role_type,
@@ -303,6 +304,11 @@ def process_jobs(target_matches: int = 25, threshold: int = 70, source: str = "c
                 if not is_located_in_india(j):
                     continue
 
+                # Internship-only guardrail (spec): the title itself must declare
+                # an internship; full-time roles are never delivered.
+                if not is_internship_title(title):
+                    continue
+
                 # Hard date gate (24h on Main; the pass's own window on fallbacks)
                 if not passes_date_gate(j.get("posted_at"), window):
                     continue
@@ -325,6 +331,11 @@ def process_jobs(target_matches: int = 25, threshold: int = 70, source: str = "c
                         pass
 
                 if not desc or len(desc.strip()) < 30:
+                    continue
+
+                # AI-family guardrail (spec): only AI Automation / AI Engineer /
+                # GenAI / AI Generalist / AI Consultant equivalents are delivered.
+                if not is_ai_role(j.get("title"), desc):
                     continue
 
                 role_type = classify_role_type(j)

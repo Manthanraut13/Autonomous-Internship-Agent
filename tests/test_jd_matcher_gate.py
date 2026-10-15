@@ -7,8 +7,9 @@ are synthetic one-liners built by the scrapers, and letting the LLM score them
 produces fabricated match scores. Unscored listings return score=None
 ("apply link only") and never reach the Groq API.
 
-All tests here exercise the gate path only (returns before any model is
-constructed), so no network access or API key is needed.
+Here everything is offline: the gate path returns before any model is
+constructed, and the total-failure test monkeypatches the model class, so no
+network access or API key is exercised.
 """
 
 import os
@@ -57,3 +58,18 @@ def test_unscored_result_shape_is_safe_for_callers():
     result = match_resume_to_job("resume text", "short synthetic description")
     assert set(result) >= {"score", "reasoning", "key_matches", "gaps"}
     assert isinstance(result["reasoning"], str) and result["reasoning"]
+
+
+def test_total_llm_failure_is_unscored_not_zero(monkeypatch):
+    """All models failing means no evaluation happened — score None, never 0."""
+    import tools.jd_matcher as jm
+
+    class Boom:
+        def __init__(self, *a, **kw):
+            raise RuntimeError("simulated outage")
+
+    monkeypatch.setattr(jm, "ChatGroq", Boom)
+    long_desc = "Build LLM agents in Python with LangChain. " * 20  # >= threshold
+    result = jm.match_resume_to_job("Python developer with LangChain", long_desc)
+    assert result["score"] is None
+    assert result["key_matches"] == []

@@ -77,7 +77,7 @@ The **Autonomous Internship Agent** is a full-stack, enterprise-grade AI automat
                                                          ▼
                                   ┌──────────────────────────────────────────────┐
                                   │     2. PRIORITY-ORDERED SCRAPER CASCADE      │
-                                  │  • Pass 1 "Main": 8 India/startup portals     │
+                                  │  • Pass 1 "Main": 9 India/startup portals     │
                                   │  • Pass 2 "Fallback": 17 remote/ATS portals   │
                                   │  • Pass 3: LinkedIn deep-widen safety net     │
                                   └──────────────────────┬───────────────────────┘
@@ -156,7 +156,7 @@ Autonomous-Internship-Agent/
 │   ├── email_sender.py             # Multi-tier email delivery (Gmail SMTP & OAuth 2.0)
 │   ├── jd_fetcher.py               # Full job description text enricher
 │   ├── jd_matcher.py               # Groq LLM JD-Resume evaluation & multi-model fallback
-│   ├── job_api.py                  # 25-portal fetchers in CSV order (see internship_sources_autonomous_agent.csv)
+│   ├── job_api.py                  # 26-portal fetchers in CSV order (see internship_sources_autonomous_agent.csv)
 │   ├── resume_parser.py            # PDF parsing & dynamic AI search query generator
 │   ├── semantic_matcher.py         # Embedding-based cosine similarity pre-filter
 │   └── whatsapp_handler.py         # Twilio WhatsApp alert formatter & sender
@@ -239,6 +239,9 @@ Autonomous-Internship-Agent/
 #### Validated Settings:
 - `GROQ_API_KEY`: Required string for LLM inference.
 - `GROQ_MODEL`: Model name (default: `openai/gpt-oss-120b`).
+- `GOOGLE_CSE_API_KEY`, `GOOGLE_CSE_CX`, `BRAVE_SEARCH_API_KEY`: Optional — one
+  of the two search providers enables the Web Search portal (Main #3);
+  without either the portal returns nothing (logged, negative-cached).
 - `DATABASE_URL`: Automatically validated by `@field_validator` to ensure supported SQLAlchemy dialect strings (`postgresql://`, `postgresql+psycopg2://`, or `sqlite://`).
 - `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER`, `USER_WHATSAPP_NUMBER`: Credentials for WhatsApp notifications.
 - `RECIPIENT_EMAIL`, `SENDER_EMAIL`: Email delivery targets.
@@ -340,7 +343,8 @@ To prevent database bloat on managed PostgreSQL (e.g. Supabase) and ensure maxim
 ### 7.1 Priority Order & Platform Hierarchy
 
 1. 🥇 **Pass 1 — Main portals (CSV order)**: Y Combinator, Startup Jobs,
-   Wellfound, Cutshort, LinkedIn, Instahyre, Hirist, Naukri. Each portal has a
+   Web Search (Google Programmable Search, Brave fallback), Wellfound,
+   Cutshort, LinkedIn, Instahyre, Hirist, Naukri. Each portal has a
    per-run quota; the pipeline halts once the target of qualified matches is
    reached.
 2. 🥈 **Pass 2 — CSV Fallback portals (17)**: Hacker News Who is Hiring,
@@ -353,8 +357,9 @@ To prevent database bloat on managed PostgreSQL (e.g. Supabase) and ensure maxim
    LinkedIn India search (6 offsets × 24h/72h) across all queries, used only
    if the first two passes leave the quota unfulfilled.
 4. Every listing — main or fallback — passes the same strict India location
-   guardrail, the 24-hour date gate, cross-run deduplication, and the
-   tech-keyword + semantic pre-filters before LLM scoring.
+   guardrail, the internship-only title gate, the AI-family guardrail, the
+   date gate, cross-run deduplication, and the tech-keyword + semantic
+   pre-filters before LLM scoring.
 
 ---
 

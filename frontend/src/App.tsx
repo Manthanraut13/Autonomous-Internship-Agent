@@ -655,6 +655,7 @@ export default function App() {
                     <optgroup label="Main (primary pass)">
                       <option value="yc">Y Combinator</option>
                       <option value="startupjobs">Startup Jobs</option>
+                      <option value="websearch">Web Search (Google/Brave)</option>
                       <option value="wellfound">Wellfound</option>
                       <option value="cutshort">Cutshort</option>
                       <option value="linkedin">LinkedIn</option>
@@ -1015,7 +1016,7 @@ export default function App() {
                 <div className="bg-[#f8f9ff] p-4 rounded-xl border border-[#d4dde8]">
                   <h4 className="text-[12px] font-bold uppercase text-[#0f1c2b] mb-2">Active Scraper Priority Cascade</h4>
                   <div className="flex flex-wrap items-center gap-2 text-[12px]">
-                    <span className="px-3 py-1 bg-[#136299] text-white font-semibold rounded-lg">1. Main · 8 portals</span>
+                    <span className="px-3 py-1 bg-[#136299] text-white font-semibold rounded-lg">1. Main · 9 portals</span>
                     <span className="text-[#7a95b0]">→</span>
                     <span className="px-3 py-1 bg-[#5b9bd5] text-white font-semibold rounded-lg">2. Fallback · 17 portals (24h→72h)</span>
                     <span className="text-[#7a95b0]">→</span>

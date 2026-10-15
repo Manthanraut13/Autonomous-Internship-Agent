@@ -67,6 +67,18 @@ class Settings(BaseSettings):
     groq_model: str = "openai/gpt-oss-120b"
 
     # ------------------------------------------------------------------ #
+    # Web Search source (Main portal #3) — provide ONE of these keys;    #
+    # without either, the portal honestly returns nothing (logged).      #
+    #   Google Programmable Search: free 100 queries/day                 #
+    #     https://programmablesearchengine.google.com/ (API key + CX)    #
+    #   Brave Search API: free 2,000 queries/month                       #
+    #     https://brave.com/search/api/                                  #
+    # ------------------------------------------------------------------ #
+    google_cse_api_key: str = ""
+    google_cse_cx: str = ""
+    brave_search_api_key: str = ""
+
+    # ------------------------------------------------------------------ #
     # LangSmith / LangChain tracing                                        #
     # ------------------------------------------------------------------ #
     langchain_tracing_v2: bool = False
@@ -112,10 +124,10 @@ class Settings(BaseSettings):
     # Declared as str here to prevent pydantic-settings from trying to   #
     # JSON-decode the value; the @field_validator converts it to a list. #
     # ------------------------------------------------------------------ #
-    # Mirrors internship_sources_autonomous_agent.csv (25 portals, CSV order);
+    # Mirrors internship_sources_autonomous_agent.csv (26 portals, CSV order);
     # the registries in tools/job_api.py are the source of truth for fetching.
     job_sources: Union[List[str], str] = (
-        "yc,startupjobs,wellfound,cutshort,linkedin,instahyre,hirist,naukri,"
+        "yc,startupjobs,websearch,wellfound,cutshort,linkedin,instahyre,hirist,naukri,"
         "hn,remoteok,remotive,himalayas,wwr,builtin,wttj,underdog,nodesk,"
         "remoterocketship,interndoor,jobsii,greenhouse,lever,ashby,workable,discovery"
     )

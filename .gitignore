@@ -43,7 +43,7 @@ token.json
 # CSV Reports
 *.csv
 !list.csv
-# The 25-portal spec the registries/quota tests validate against (must be in CI)
+# The 26-portal spec the registries/quota tests validate against (must be in CI)
 !internship_sources_autonomous_agent.csv
 
 # Temporary test & runner directories

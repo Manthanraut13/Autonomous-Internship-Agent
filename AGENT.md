@@ -9,12 +9,12 @@ Operational specification and honest project status.
 
 ## What this project is
 
-An automated pipeline that scrapes AI/ML internship openings from the 25
-portals listed in `internship_sources_autonomous_agent.csv` (8 Main → 17
+An automated pipeline that scrapes AI/ML internship openings from the 26
+portals listed in `internship_sources_autonomous_agent.csv` (9 Main → 17
 Fallback, with an uncapped LinkedIn India deep-widen safety net), keeps only
-India-based listings, scores them against a candidate resume with
-a Groq LLM, and delivers matches via a React dashboard, CSV email, and
-WhatsApp summary.
+India-based AI internships (internship-only + AI-family guardrails), scores
+them against a candidate resume with a Groq LLM, and delivers matches via a
+React dashboard, CSV email, and WhatsApp summary.
 
 - Architecture and usage: `README.md`
 - Pipeline detail: `DOCUMENTATION.md`
@@ -23,12 +23,14 @@ WhatsApp summary.
 
 ## Testing
 
-- Suite: `tests/` (pytest), 60+ unit/integration tests, fully offline.
+- Suite: `tests/` (pytest), 100+ unit/integration tests, fully offline.
 - Run: `venv\Scripts\python -m pytest tests/ -v` (or `python -m pytest`).
-- Covered: India location guardrail, LLM scoring gate (no real job
-  description → delivered "unscored, apply link only"), whole-word tech
-  keyword pre-filter, login brute-force guard, pipeline-core smoke path
-  (dedup, 24h date gate, unscored delivery, dry-run, client-disconnect abort).
+- Covered: India location guardrail, internship-only + AI-family role
+  guardrails, LLM scoring gate (no real job description → delivered
+  "unscored, apply link only"), whole-word tech keyword pre-filter,
+  Web Search provider chain (Google CSE/Brave + JSON-LD-only harvest),
+  login brute-force guard, pipeline-core smoke path (dedup, date gate,
+  unscored delivery, dry-run, client-disconnect abort).
 - Known gaps: no coverage measurement is run or claimed; scraper HTML parsers,
   email/WhatsApp delivery, and the React frontend have no automated tests.
 
@@ -44,6 +46,9 @@ WhatsApp summary.
 - Admin credentials come only from the environment (`ADMIN_PASSWORD`); never
   commit passwords, and rotate any credential that has ever appeared in git
   history.
+- The Web Search portal needs one search key (`GOOGLE_CSE_API_KEY` +
+  `GOOGLE_CSE_CX`, or `BRAVE_SEARCH_API_KEY`); without either it returns `[]`
+  by design — that is configuration, not a bug.
 
 ## Operating rules for agents & contributors
 
