@@ -293,7 +293,9 @@ def classify_role_type(job: Dict[str, Any]) -> str:
     """
     title = (job.get("title") or "").lower()
     desc = (job.get("description") or "").lower()
-    combined = f"{title} {desc}"
+    # Underscores normalized so keyword \b boundaries fire inside tokens
+    # like "Internship_SW_CDC" (same fix class as is_internship_title).
+    combined = f"{title} {desc}".replace("_", " ")
 
     # Check internship / fellowship / co-op FIRST (see docstring)
     internship_keywords = [

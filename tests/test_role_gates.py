@@ -86,6 +86,18 @@ def test_internship_outranks_contract():
         {"title": "Data Engineer", "description": "contract role, 6 months"}) == "contract"
 
 
+def test_underscore_joined_titles_classify_correctly():
+    # Regression: \b does not fire on "_", so "Internship_SW_CDC" was once
+    # misclassified as non-internship (real DB casualty: Qualcomm #43).
+    assert ja.is_internship_title("1 year  Internship_SW_CDC")
+    assert ja.is_internship_title("AI_Intern")
+    assert ja.is_internship_title("GenAI_Developer_Internship")
+    assert not ja.is_internship_title("International_Sales_Manager")
+    assert ja.is_ai_role("ML_Engineer_Intern")
+    assert ja.is_ai_role("GenAI_Developer Intern", "")
+    assert classify_role_type({"title": "AI_Intern", "description": ""}) == "internship"
+
+
 def test_matches_query_uses_word_boundaries():
     assert not ja._matches_query("maintain detail email", ["ai"])
     assert ja._matches_query("AI Engineer Intern", ["ai", "engineer"])

@@ -315,9 +315,12 @@ def is_internship_title(title: str) -> bool:
     True only when the title itself declares an internship (or equivalent:
     co-op, trainee, apprenticeship, fellowship). Full-time roles are rejected
     even when their description mentions interns — the product delivers
-    internships exclusively.
+    internships exclusively. Underscores are normalized first: regex word
+    boundaries do not fire on "Internship_SW_CDC" / "AI_Intern" style titles.
     """
-    return bool(title) and bool(_INTERNSHIP_TITLE_PATTERN.search(title))
+    if not title:
+        return False
+    return bool(_INTERNSHIP_TITLE_PATTERN.search(title.replace("_", " ")))
 
 
 def is_ai_role(title: str, description: str = "") -> bool:
@@ -334,10 +337,12 @@ def is_ai_role(title: str, description: str = "") -> bool:
         'retail') never matches — the pattern is word-bounded.
     """
     title = title or ""
-    if _AI_ROLE_PATTERN.search(title):
+    # Underscores normalized: \b does not fire inside "GenAI_Developer" /
+    # "AI_Intern" style titles (same class as is_internship_title).
+    if _AI_ROLE_PATTERN.search(title.replace("_", " ")):
         return True
     return bool(_GENERIC_TECH_TITLE_PATTERN.search(title)) and bool(
-        _AI_ROLE_PATTERN.search(description or "")
+        _AI_ROLE_PATTERN.search((description or "").replace("_", " "))
     )
 
 
