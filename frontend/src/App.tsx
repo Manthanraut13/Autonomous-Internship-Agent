@@ -369,7 +369,11 @@ export default function App() {
       }
     }
     return true;
-  });
+    // Newest → oldest by scrape date; id desc breaks ties (id follows insert order).
+  }).sort((a, b) =>
+    (new Date(b.scraped_at ?? 0).getTime() - new Date(a.scraped_at ?? 0).getTime()) ||
+    b.id - a.id
+  );
 
   /* ───────────────────────────────────────────────────────────────────────── */
   /* Unauthenticated Login Screen                                              */
@@ -856,6 +860,12 @@ export default function App() {
 
                             {/* Tags & Skills */}
                             <div className="flex flex-wrap gap-1.5 mb-4">
+                              <span className="tag-badge bg-[#f8f9ff] text-[#41474f] border-[#d4dde8]" title="Date this opening was scraped from its source">
+                                <span className="material-symbols-outlined text-[13px]">calendar_month</span>
+                                Scraped: {job.scraped_at
+                                  ? new Date(job.scraped_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+                                  : '—'}
+                              </span>
                               <span className={`tag-badge ${job.work_mode === 'remote' ? 'bg-[#eefcf8] text-[#006b5c] border-[#8df5df]' : ''}`}>
                                 <span className="material-symbols-outlined text-[13px]">
                                   {job.work_mode === 'remote' ? 'wifi' : job.work_mode === 'hybrid' ? 'sync' : 'apartment'}
